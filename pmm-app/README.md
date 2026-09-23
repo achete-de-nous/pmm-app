@@ -9,28 +9,36 @@ vendor, sales, dst) diisi manual oleh kamu lewat aplikasi. Tidak ada dummy data.
 
 ---
 
-## Yang sudah tersedia di versi ini (Milestone 1)
+## Update terbaru (revisi)
+
+- **Vendors**: sekarang punya field **Vendor Type** (Fabric, Sewing, Accessories,
+  Packaging, Dyeing & Printing, Bordir, atau tipe custom yang bisa ditambahkan
+  sendiri). Vendor bisa **diedit** dan **dihapus**.
+- **Tab Product baru**: master data product dengan SKU, Product Name, Product
+  Name w/o Variant, Harga, Collection. Bisa add/edit/delete. Kolom
+  **Product Name w/o Variant** menjadi sumber dropdown Product di tab COGS.
+- **Tab COGS (dulu "COGS History")**: flow baru dengan aksi **Add COGS** dan
+  **Change COGS**. Setiap COGS terikat pada kombinasi Vendor + Product + MOQ,
+  bisa punya banyak baris Material (dropdown dari tab Materials, otomatis
+  hitung Total Bahan per baris & Total Bahan Semuanya), plus Harga Jahit, dan
+  Total COGS dihitung otomatis. Setiap kali **Change COGS** dilakukan, versi
+  lama tersimpan sebagai history dan tidak hilang.
+
+---
+
+## Modul yang tersedia
 
 - PIN screen (default `1234`, bisa diganti di Settings)
-- "Siapa kamu?" user picker + audit history (siapa mengubah apa, kapan)
-- Article master (bisa diketik manual, autocomplete otomatis)
-- Initial Finished Product Balance + Weekly Sales + kalkulasi otomatis **Need to Produce**
-- Materials master + Initial Material Balance
-- Material Transactions (Purchase, Transfer, Vendor Transfer, Return, Direct
-  Purchase) dengan Warehouse Balance & Vendor Balance yang dihitung otomatis
-- Vendor Management + halaman detail vendor (production + material + history)
-- Production Plan: Planned/Fulfilled/Unfulfilled qty, status otomatis, COGS
-  yang bisa diedit sebelum Confirm lalu terkunci setelah Confirm
-- COGS History (setiap perubahan COGS tercatat dengan difference & %)
-- Month-End Reconciliation (System Balance vs Manual Count, variance otomatis)
-- Dashboard ringkasan
-- Empty state di semua modul saat data masih kosong
-
-**Belum termasuk** (bisa ditambahkan di milestone berikutnya): halaman
-Production Batch grouping khusus, halaman Outstanding Production dengan
-filter lengkap (saat ini bisa dilihat lewat filter status di halaman
-Production), dan data migration tooling untuk perubahan struktur data di
-masa depan.
+- "Siapa kamu?" user picker + audit history
+- Articles (free-typed, auto-created), Initial Finished Balance, Weekly Sales → otomatis **Need to Produce**
+- Materials + Initial Material Balance
+- Material Transactions (Purchase / Transfer / Vendor Transfer / Return / Direct Purchase) → otomatis Warehouse & Vendor Balance
+- Vendors (dengan Vendor Type, edit, delete) + halaman detail vendor
+- Product master data (SKU, Product Name, Product Name w/o Variant, Harga, Collection)
+- COGS (Add/Change flow, dynamic materials, Harga Jahit, Total COGS, history tersimpan)
+- Production Plans: Planned/Fulfilled/Unfulfilled, auto status, COGS editable pre-Confirm lalu terkunci
+- Month-End Reconciliation (system balance vs manual count, variance otomatis)
+- Dashboard ringkasan, empty state di semua modul
 
 ---
 
@@ -38,63 +46,51 @@ masa depan.
 
 ### Step 1 — Upload ke GitHub
 
-1. Buka [github.com](https://github.com) dan login (atau buat akun baru, gratis).
-2. Klik tombol hijau **New** di kiri atas untuk membuat repository baru.
-3. Beri nama repo, misalnya `production-material-app`. Pilih **Private** kalau
-   tidak ingin publik. Klik **Create repository**.
-4. Di halaman repo yang masih kosong, klik link **uploading an existing file**.
-5. **Drag & drop** seluruh isi folder project ini (semua file dan folder) ke
-   area upload tersebut. Tunggu sampai semua file selesai ter-upload.
-6. Scroll ke bawah, klik **Commit changes**.
-
-Tidak perlu install Git atau pakai terminal sama sekali.
+1. Buka [github.com](https://github.com) dan login.
+2. Klik **New** repository, beri nama (misal `pmm-app`), **Create repository**.
+3. Di halaman repo kosong, klik **uploading an existing file**.
+4. Unzip project ini di komputer kamu, lalu **drag & drop isi folder** (bukan
+   folder itu sendiri, dan bukan file zip-nya) ke area upload — pastikan
+   `package.json` langsung terlihat di root repo, bukan di dalam subfolder.
+5. Scroll ke bawah, klik **Commit changes**.
 
 ### Step 2 — Deploy ke Vercel
 
-1. Buka [vercel.com](https://vercel.com) dan login memakai akun GitHub kamu.
-2. Klik **Add New... → Project**.
-3. Pilih repository `production-material-app` yang baru saja kamu upload,
-   klik **Import**.
-4. Biarkan semua pengaturan default (Vercel otomatis mendeteksi ini project
-   Next.js), lalu klik **Deploy**.
-5. Tunggu proses build selesai. Untuk sementara, situs akan error karena
-   database belum terhubung — itu normal, lanjut ke Step 3.
+1. Buka [vercel.com](https://vercel.com), login dengan akun GitHub.
+2. **Add New → Project** → pilih repo yang baru diupload → **Import**.
+3. Biarkan default (Framework Preset: Next.js) → **Deploy**.
 
-### Step 3 — Hubungkan Upstash Redis
+### Step 3 — Hubungkan Upstash Redis (opsional pakai jalur gratis tanpa kartu)
 
-1. Di dashboard project Vercel kamu, buka tab **Storage**.
-2. Klik **Create Database** atau **Browse Marketplace**, cari **Upstash**,
-   lalu pilih **Upstash Redis**.
-3. Ikuti langkah setup (beri nama database, pilih region terdekat, misal
-   Singapore), lalu klik **Create** / **Connect**.
-4. Vercel akan otomatis menambahkan environment variables yang dibutuhkan
-   (seperti `KV_REST_API_URL` dan `KV_REST_API_TOKEN`, atau
-   `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`) ke project kamu —
-   tidak perlu kamu isi manual.
+1. Buka [upstash.com](https://upstash.com), sign up gratis (tanpa kartu).
+2. **Create Database**, beri nama, pilih region terdekat, tipe Regional → **Create**.
+3. Di halaman database, buka bagian **REST API**, copy:
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+4. Di project Vercel kamu → **Settings → Environment Variables**, tambahkan
+   dua variable di atas dengan value yang sama persis (Environment: Production).
+5. **Save**.
 
 ### Step 4 — Redeploy & Testing
 
-1. Kembali ke tab **Deployments**, klik titik tiga (`...`) pada deployment
-   terakhir, pilih **Redeploy** agar environment variables baru terpakai.
-2. Setelah selesai, buka URL situs kamu (contoh: `nama-project.vercel.app`).
-3. Checklist testing:
-   - [ ] Masukkan PIN `1234` → berhasil masuk
-   - [ ] Tambah User baru di pojok kanan atas
-   - [ ] Tambah Vendor pertama
-   - [ ] Tambah Article pertama (lewat Weekly Sales atau Production)
-   - [ ] Tambah Material pertama + Initial Balance
-   - [ ] Tambah Weekly Sales → cek Need to Produce di halaman Weekly Sales
-   - [ ] Buat Production Plan → coba Confirm → coba Update Fulfilled
-   - [ ] Tambah Material Transaction → cek Vendor Balance ter-update
-   - [ ] Coba Month-End Reconciliation
+1. Tab **Deployments** → **⋯** pada deployment terakhir → **Redeploy**.
+2. Buka URL situs kamu dan cek:
+   - [ ] PIN `1234` berhasil masuk
+   - [ ] Tambah Vendor + Vendor Type
+   - [ ] Edit & delete Vendor
+   - [ ] Tambah Product
+   - [ ] Add COGS (pilih vendor, product, isi MOQ, tambah material, isi harga jahit)
+   - [ ] Change COGS untuk kombinasi yang sama → cek versi lama masuk History
+   - [ ] Tambah Material + Initial Balance
+   - [ ] Weekly Sales → cek Need to Produce
+   - [ ] Production Plan → Confirm → Update Fulfilled
+   - [ ] Material Transaction → cek Vendor Balance
+   - [ ] Reconciliation
    - [ ] Ganti PIN di Settings
-
-Kalau semua checklist di atas berjalan, aplikasi sudah siap dipakai sehari-hari
-oleh tim kamu, bisa diakses bersamaan dari HP dan laptop.
 
 ---
 
-## Menjalankan secara lokal (opsional, untuk development)
+## Menjalankan secara lokal (opsional)
 
 ```bash
 npm install

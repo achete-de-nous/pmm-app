@@ -2,6 +2,7 @@
 // `label` = human name used in audit log sentences.
 // `nameField` = which field to show in "X created/updated <nameField>" sentences.
 // `softDelete` = true -> DELETE sets active:false instead of removing the key.
+//                false -> DELETE really removes the record (hard delete).
 // `immutable` = true -> record can never be edited/deleted once created (history tables).
 
 export const ENTITIES = {
@@ -12,9 +13,11 @@ export const ENTITIES = {
   materials: { label: "Material", nameField: "name", softDelete: true },
   materialInitialBalances: { label: "Initial Material Balance", nameField: "materialName", immutable: false },
   materialTransactions: { label: "Material Transaction", nameField: "materialName", immutable: true },
-  vendors: { label: "Vendor", nameField: "name", softDelete: true },
+  vendors: { label: "Vendor", nameField: "name", softDelete: false },
+  vendorTypes: { label: "Vendor Type", nameField: "name", softDelete: false },
+  products: { label: "Product", nameField: "productName", softDelete: false },
   productionPlans: { label: "Production Plan", nameField: "articleName", immutable: false },
-  cogsHistory: { label: "COGS History", nameField: "articleName", immutable: true },
+  cogsRecords: { label: "COGS", nameField: "productName", immutable: false },
   reconciliations: { label: "Reconciliation", nameField: "materialName", immutable: true },
   auditHistory: { label: "Audit History", nameField: "summary", immutable: true },
   settings: { label: "Settings", nameField: "key", immutable: false },

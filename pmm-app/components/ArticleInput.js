@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 // Free-text input for Article Name with autocomplete suggestions.
 // Does NOT require picking from the list - user can type a brand new name.

@@ -46,7 +46,7 @@ export default function DashboardPage() {
         <StatCard label="Production Unfulfilled" value={data.totalProductionUnfulfilled} />
         <StatCard label="Warehouse Material Value" value={idr(data.warehouseMaterialValue)} />
         <StatCard label="Vendor Material Value" value={idr(data.vendorMaterialValue)} />
-        <StatCard label="COGS Changes" value={data.cogsChangeCount} />
+        <StatCard label="COGS Records" value={data.cogsChangeCount} />
         <StatCard
           label="Last Reconciliation Variance"
           value={data.lastReconciliationVariance == null ? "-" : data.lastReconciliationVariance}

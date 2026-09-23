@@ -32,7 +32,14 @@ export default function VendorDetailPage() {
     <div className="flex flex-col gap-6">
       <div>
         <div className="text-lg font-semibold">{vendor.name}</div>
-        <div className="text-sm text-gray-500">{vendor.contactPerson || "-"} · {vendor.phone || vendor.email || "-"}</div>
+        {vendor.vendorType && (
+          <span className="inline-block text-xs px-2 py-0.5 rounded-full border border-gray-200 text-gray-600 mt-1">
+            {vendor.vendorType}
+          </span>
+        )}
+        <div className="text-sm text-gray-500 mt-1">
+          {vendor.contactPerson || "-"} · {vendor.phone || vendor.email || "-"}
+        </div>
       </div>
 
       <div>

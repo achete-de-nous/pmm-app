@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { apiList, apiCreate, apiCalc } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
@@ -10,7 +10,6 @@ export default function ReconciliationPage() {
   const { currentUser } = useUser();
   const { showToast } = useToast();
   const [balances, setBalances] = useState([]);
-  const [vendors, setVendors] = useState([]);
   const [history, setHistory] = useState([]);
   const [open, setOpen] = useState(null);
   const [manualCount, setManualCount] = useState("");
@@ -18,9 +17,8 @@ export default function ReconciliationPage() {
   const [date, setDate] = useState("");
 
   const refresh = async () => {
-    const [mb, v, h] = await Promise.all([apiCalc("material-balances"), apiList("vendors"), apiList("reconciliations")]);
+    const [mb, h] = await Promise.all([apiCalc("material-balances"), apiList("reconciliations")]);
     setBalances(mb);
-    setVendors(v);
     setHistory(h);
   };
 

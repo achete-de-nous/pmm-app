@@ -63,11 +63,11 @@ export async function softDeleteRecord(type, id, user) {
     throw new Error(`${ENTITIES[type].label} bersifat historical dan tidak dapat dihapus.`);
   }
   if (!ENTITIES[type]?.softDelete) {
-    // hard delete only for non-historical, non-soft-delete collections (rare)
+    // hard delete for non-soft-delete collections (vendors, products, vendorTypes, ...)
     const existing = await getRecord(type, id);
     await redis.del(recKey(type, id));
     await redis.srem(idxKey(type), id);
-    await logAudit(type, "delete", existing, user, `${ENTITIES[type]?.label || type} dihapus`);
+    await logAudit(type, "delete", existing, user, `${ENTITIES[type]?.label || type} "${existing?.[ENTITIES[type]?.nameField] ?? id}" dihapus`);
     return null;
   }
   return updateRecord(type, id, { active: false }, user);

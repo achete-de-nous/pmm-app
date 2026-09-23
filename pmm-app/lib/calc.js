@@ -48,18 +48,18 @@ export async function computeArticleStockSummary() {
 
 // ---------- Material balances ----------
 // Balance(material, location) = InitialBalance + Incoming - Outgoing
-// location is either "Warehouse" or a vendor id (prefixed "vendor:<id>")
+// location is either "Warehouse" or a vendor id
 export async function computeMaterialBalances() {
   const [materials, initialBalances, transactions, vendors] = await Promise.all([
     listRecords("materials"),
     listRecords("materialInitialBalances"),
     listRecords("materialTransactions"),
-    listRecords("vendors"),
+    listRecords("vendors", { includeInactive: true }),
   ]);
 
   const vendorNameById = Object.fromEntries(vendors.map((v) => [v.id, v.name]));
   const key = (materialName, location) => `${materialName}::${location}`;
-  const balances = {}; // key -> { materialName, location, qty }
+  const balances = {};
 
   const bump = (materialName, location, delta) => {
     const k = key(materialName, location);
@@ -73,11 +73,9 @@ export async function computeMaterialBalances() {
 
   for (const t of transactions) {
     const qty = num(t.quantity);
-    // source loses qty (unless source is "Supplier" - external, doesn't affect our ledger)
     if (t.source && t.source !== "Supplier") {
       bump(t.materialName, t.source, -qty);
     }
-    // destination gains qty
     if (t.destination) {
       bump(t.materialName, t.destination, qty);
     }
@@ -89,7 +87,6 @@ export async function computeMaterialBalances() {
     isVendor: row.location !== "Warehouse",
   }));
 
-  // attach material COGS/unit for value calc
   const materialByName = Object.fromEntries(materials.map((m) => [m.name, m]));
   return rows.map((r) => {
     const m = materialByName[r.materialName];
@@ -109,25 +106,16 @@ export async function computeVendorBalances(vendorId) {
   return filtered;
 }
 
-// ---------- COGS ----------
-export function computeCOGSDiff(previous, next) {
-  const prev = num(previous);
-  const nxt = num(next);
-  const diff = nxt - prev;
-  const pct = prev !== 0 ? (diff / prev) * 100 : 0;
-  return { diff, pct };
-}
-
 // ---------- Dashboard ----------
 export async function computeDashboard() {
-  const [articles, materials, vendors, weeklySales, productionPlans, cogsHistory, reconciliations, stockSummary, materialBalances] =
+  const [articles, materials, vendors, weeklySales, productionPlans, cogsRecords, reconciliations, stockSummary, materialBalances] =
     await Promise.all([
       listRecords("articles"),
       listRecords("materials"),
       listRecords("vendors"),
       listRecords("weeklySales"),
       listRecords("productionPlans"),
-      listRecords("cogsHistory"),
+      listRecords("cogsRecords"),
       listRecords("reconciliations"),
       computeArticleStockSummary(),
       computeMaterialBalances(),
@@ -153,7 +141,7 @@ export async function computeDashboard() {
     totalProductionUnfulfilled: totalUnfulfilled,
     warehouseMaterialValue: warehouseValue,
     vendorMaterialValue: vendorValue,
-    cogsChangeCount: cogsHistory.length,
+    cogsChangeCount: cogsRecords.length,
     lastReconciliationVariance: lastReconVariance ?? null,
     isEmpty: articles.length === 0 && materials.length === 0 && vendors.length === 0,
   };
