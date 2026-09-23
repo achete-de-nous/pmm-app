@@ -11,7 +11,7 @@ export const ENTITIES = {
   finishedInitialBalances: { label: "Initial Finished Product Balance", nameField: "articleName", immutable: false },
   weeklySales: { label: "Weekly Sales", nameField: "week", immutable: true },
   materials: { label: "Material", nameField: "name", softDelete: true },
-  materialInitialBalances: { label: "Initial Material Balance", nameField: "materialName", immutable: false },
+  materialCategories: { label: "Fabric Category", nameField: "name", softDelete: false },
   materialTransactions: { label: "Material Transaction", nameField: "materialName", immutable: true },
   vendors: { label: "Vendor", nameField: "name", softDelete: false },
   vendorTypes: { label: "Vendor Type", nameField: "name", softDelete: false },

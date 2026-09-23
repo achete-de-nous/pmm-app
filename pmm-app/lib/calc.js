@@ -47,12 +47,11 @@ export async function computeArticleStockSummary() {
 }
 
 // ---------- Material balances ----------
-// Balance(material, location) = InitialBalance + Incoming - Outgoing
+// Balance(material, location) = Incoming - Outgoing (from Material Transactions only)
 // location is either "Warehouse" or a vendor id
 export async function computeMaterialBalances() {
-  const [materials, initialBalances, transactions, vendors] = await Promise.all([
+  const [materials, transactions, vendors] = await Promise.all([
     listRecords("materials"),
-    listRecords("materialInitialBalances"),
     listRecords("materialTransactions"),
     listRecords("vendors", { includeInactive: true }),
   ]);
@@ -66,10 +65,6 @@ export async function computeMaterialBalances() {
     if (!balances[k]) balances[k] = { materialName, location, qty: 0 };
     balances[k].qty += delta;
   };
-
-  for (const b of initialBalances) {
-    bump(b.materialName, b.location || "Warehouse", num(b.qty));
-  }
 
   for (const t of transactions) {
     const qty = num(t.quantity);

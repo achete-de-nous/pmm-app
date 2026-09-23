@@ -5,13 +5,13 @@ import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
 import EmptyState from "@/components/EmptyState";
-import AutocompleteInput from "@/components/AutocompleteInput";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const num = (v) => Number(v) || 0;
 const UNITS = ["Meter", "Pcs"];
+const SEWING_TYPE = "Sewing";
 
-const emptyRow = () => ({ materialName: "", usage: "", pricePerUnit: "", unit: "" });
+const emptyRow = () => ({ materialName: "", fabricCategory: "", usage: "", pricePerUnit: "", unit: "" });
 
 export default function CogsPage() {
   const { currentUser } = useUser();
@@ -50,6 +50,12 @@ export default function CogsPage() {
     return Array.from(set);
   }, [products]);
 
+  // COGS Vendor dropdown only shows vendors whose Vendor Type is "Sewing".
+  const sewingVendors = useMemo(
+    () => vendors.filter((v) => (v.vendorType || "").toLowerCase() === SEWING_TYPE.toLowerCase()),
+    [vendors]
+  );
+
   const currentRecords = useMemo(() => cogsRecords.filter((c) => c.isCurrent), [cogsRecords]);
   const historyRecords = useMemo(
     () => cogsRecords.filter((c) => !c.isCurrent).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
@@ -83,6 +89,7 @@ export default function CogsPage() {
       setRows(
         found.materials.map((m) => ({
           materialName: m.materialName,
+          fabricCategory: m.fabricCategory || "",
           usage: m.usage,
           pricePerUnit: m.pricePerUnit,
           unit: m.unit,
@@ -101,6 +108,7 @@ export default function CogsPage() {
     const mat = materials.find((m) => m.name.toLowerCase() === materialName.toLowerCase());
     updateRow(idx, {
       materialName,
+      fabricCategory: mat?.category || "",
       pricePerUnit: mat ? mat.currentCOGS ?? "" : rows[idx].pricePerUnit,
       unit: mat?.unit || rows[idx].unit,
     });
@@ -198,6 +206,7 @@ export default function CogsPage() {
                     <thead className="text-left text-gray-500 text-xs">
                       <tr>
                         <th className="py-1">Bahan</th>
+                        <th className="py-1">Category</th>
                         <th className="py-1 text-right">Usage</th>
                         <th className="py-1 text-right">Harga/Unit</th>
                         <th className="py-1 text-right">Total</th>
@@ -207,6 +216,7 @@ export default function CogsPage() {
                       {c.materials.map((m, i) => (
                         <tr key={i} className="border-t border-gray-100">
                           <td className="py-1">{m.materialName}</td>
+                          <td className="py-1 text-gray-500">{m.fabricCategory || "-"}</td>
                           <td className="py-1 text-right">
                             {m.usage} {m.unit}
                           </td>
@@ -274,15 +284,20 @@ export default function CogsPage() {
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Vendor</label>
+              <label className="label">Vendor (Sewing)</label>
               <select className="input" value={form.vendorId} onChange={(e) => setForm({ ...form, vendorId: e.target.value })}>
                 <option value="">Pilih vendor</option>
-                {vendors.map((v) => (
+                {sewingVendors.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.name}
                   </option>
                 ))}
               </select>
+              {sewingVendors.length === 0 && (
+                <div className="text-xs text-gray-400 mt-1">
+                  Belum ada vendor dengan Vendor Type "Sewing". Tambahkan dulu di tab Vendors.
+                </div>
+              )}
             </div>
             <div>
               <label className="label">Product</label>
@@ -334,6 +349,14 @@ export default function CogsPage() {
                       </select>
                     </div>
                     <div>
+                      <label className="label">Fabric Category</label>
+                      <select className="input bg-gray-50 text-gray-500" value={row.fabricCategory} disabled>
+                        <option value="">{row.fabricCategory || "-"}</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
                       <label className="label">Penggunaan Bahan</label>
                       <input
                         type="number"
@@ -342,8 +365,6 @@ export default function CogsPage() {
                         onChange={(e) => updateRow(idx, { usage: e.target.value })}
                       />
                     </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 mt-2">
                     <div>
                       <label className="label">Harga Bahan per Unit</label>
                       <input
@@ -353,10 +374,17 @@ export default function CogsPage() {
                         onChange={(e) => updateRow(idx, { pricePerUnit: e.target.value })}
                       />
                     </div>
-                    <div>
-                      <label className="label">Unit</label>
-                      <AutocompleteInput value={row.unit} onChange={(v) => updateRow(idx, { unit: v })} options={UNITS} />
-                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <label className="label">Unit</label>
+                    <select className="input" value={row.unit} onChange={(e) => updateRow(idx, { unit: e.target.value })}>
+                      <option value="">Pilih unit</option>
+                      {UNITS.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="flex items-center justify-between mt-2 text-sm">
                     <span className="text-gray-500">Total Bahan</span>
