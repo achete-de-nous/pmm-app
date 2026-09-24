@@ -1,15 +1,23 @@
 "use client";
-import { useEffect, useState } from "react";
-import { apiList, apiCreate, apiUpdate, apiDelete } from "@/lib/api-client";
+import { useEffect, useRef, useState } from "react";
+import { apiList, apiCreate, apiUpdate, apiDelete, apiPost } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import EmptyState from "@/components/EmptyState";
+import { downloadProductTemplate, parseProductFile, classifyRows } from "@/lib/productImport";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 
 const emptyForm = { sku: "", productName: "", productNameNoVariant: "", price: "", collection: "" };
+
+const STATUS_LABEL = {
+  new: { text: "Baru", cls: "bg-green-50 text-green-700" },
+  "duplicate-existing": { text: "SKU sudah terdaftar", cls: "bg-amber-50 text-amber-700" },
+  "duplicate-file": { text: "Duplikat di file", cls: "bg-red-50 text-red-700" },
+  error: { text: "Error", cls: "bg-red-50 text-red-700" },
+};
 
 export default function ProductsPage() {
   const { currentUser } = useUser();
@@ -19,6 +27,15 @@ export default function ProductsPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState(null);
+
+  // Import flow state
+  const [importOpen, setImportOpen] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [headerError, setHeaderError] = useState(null);
+  const [parsedRows, setParsedRows] = useState([]); // classified rows
+  const [duplicateStrategy, setDuplicateStrategy] = useState("skip");
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef(null);
 
   const refresh = async () => setProducts(await apiList("products"));
 
@@ -79,13 +96,93 @@ export default function ProductsPage() {
     }
   };
 
+  // ---- Import File flow ----
+
+  const openImport = () => {
+    setFileName("");
+    setHeaderError(null);
+    setParsedRows([]);
+    setDuplicateStrategy("skip");
+    setImportOpen(true);
+  };
+
+  const closeImport = () => {
+    setImportOpen(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    setParsedRows([]);
+    setHeaderError(null);
+    try {
+      const { headerError, rows } = await parseProductFile(file);
+      if (headerError) {
+        setHeaderError(headerError);
+        return;
+      }
+      if (rows.length === 0) {
+        setHeaderError("File tidak berisi data. Pastikan ada baris data di bawah header.");
+        return;
+      }
+      const classified = classifyRows(rows, products);
+      setParsedRows(classified);
+    } catch (err) {
+      setHeaderError(err.message);
+    }
+  };
+
+  const hasBlockingIssues =
+    !!headerError || parsedRows.some((r) => r.status === "error" || r.status === "duplicate-file");
+  const hasExistingDuplicates = parsedRows.some((r) => r.status === "duplicate-existing");
+  const importableCount = parsedRows.filter((r) => r.status === "new" || r.status === "duplicate-existing").length;
+
+  const confirmImport = async () => {
+    if (hasBlockingIssues || parsedRows.length === 0) return;
+    setImporting(true);
+    try {
+      const rowsToSend = parsedRows
+        .filter((r) => r.status === "new" || r.status === "duplicate-existing")
+        .map((r) => ({
+          sku: r.sku,
+          productName: r.productName,
+          productNameNoVariant: r.productNameNoVariant,
+          price: r.price,
+          collection: r.collection,
+        }));
+      const result = await apiPost("/api/products/import", {
+        rows: rowsToSend,
+        duplicateStrategy,
+        user: currentUser,
+      });
+      const parts = [];
+      if (result.created) parts.push(`${result.created} ditambahkan`);
+      if (result.updated) parts.push(`${result.updated} diupdate`);
+      if (result.skipped) parts.push(`${result.skipped} dilewati`);
+      showToast(parts.length > 0 ? parts.join(", ") : "Tidak ada perubahan", result.errors?.length ? "error" : "success");
+      closeImport();
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div className="text-lg font-semibold">Product</div>
-        <button className="btn-primary" onClick={openAdd}>
-          + Product
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-secondary" onClick={openImport}>
+            Import File
+          </button>
+          <button className="btn-primary" onClick={openAdd}>
+            + Product
+          </button>
+        </div>
       </div>
 
       {products.length === 0 ? (
@@ -170,6 +267,118 @@ export default function ProductsPage() {
         confirmLabel="Hapus"
         danger
       />
+
+      <Modal open={importOpen} onClose={closeImport} title="Import Product dari File">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <div className="text-sm text-gray-500">
+              Upload file Excel (.xlsx) atau CSV (.csv) dengan header: <br />
+              <span className="font-mono text-xs">SKU | Product | Product Name w/o Variant | Harga | Collection</span>
+            </div>
+            <button type="button" className="btn-secondary self-start" onClick={downloadProductTemplate}>
+              Download Product Template
+            </button>
+          </div>
+
+          <div>
+            <label className="label">Pilih File</label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleFileChange}
+              className="block w-full text-sm border border-gray-300 rounded-lg px-3 py-2"
+            />
+            {fileName && <div className="text-xs text-gray-400 mt-1">{fileName}</div>}
+          </div>
+
+          {headerError && (
+            <div className="bg-red-50 text-red-700 text-sm rounded-lg px-3 py-2">{headerError}</div>
+          )}
+
+          {parsedRows.length > 0 && (
+            <>
+              <div className="text-sm font-medium">Preview ({parsedRows.length} baris)</div>
+              <div className="overflow-x-auto max-h-64 overflow-y-auto border border-gray-100 rounded-lg">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 text-left text-gray-500 sticky top-0">
+                    <tr>
+                      <th className="px-2 py-1.5">Baris</th>
+                      <th className="px-2 py-1.5">SKU</th>
+                      <th className="px-2 py-1.5">Product</th>
+                      <th className="px-2 py-1.5">Product Name w/o Variant</th>
+                      <th className="px-2 py-1.5 text-right">Harga</th>
+                      <th className="px-2 py-1.5">Collection</th>
+                      <th className="px-2 py-1.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parsedRows.map((r, i) => (
+                      <tr key={i} className="border-t border-gray-100">
+                        <td className="px-2 py-1.5 text-gray-400">{r.rowNumber}</td>
+                        <td className="px-2 py-1.5">{r.sku || "-"}</td>
+                        <td className="px-2 py-1.5">{r.productName || "-"}</td>
+                        <td className="px-2 py-1.5">{r.productNameNoVariant || "-"}</td>
+                        <td className="px-2 py-1.5 text-right">{r.price ? idr(r.price) : "-"}</td>
+                        <td className="px-2 py-1.5">{r.collection || "-"}</td>
+                        <td className="px-2 py-1.5">
+                          <span className={`px-1.5 py-0.5 rounded text-[11px] ${STATUS_LABEL[r.status].cls}`}>
+                            {r.status === "error" ? r.errors.join(", ") : STATUS_LABEL[r.status].text}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {parsedRows.some((r) => r.status === "duplicate-file") && (
+                <div className="bg-red-50 text-red-700 text-sm rounded-lg px-3 py-2">
+                  Ada SKU yang duplikat di dalam file ini. Perbaiki file sebelum import bisa dilanjutkan.
+                </div>
+              )}
+              {parsedRows.some((r) => r.status === "error") && (
+                <div className="bg-red-50 text-red-700 text-sm rounded-lg px-3 py-2">
+                  Ada baris dengan data tidak valid. Perbaiki file sebelum import bisa dilanjutkan.
+                </div>
+              )}
+
+              {hasExistingDuplicates && !hasBlockingIssues && (
+                <div className="flex flex-col gap-2 bg-amber-50 rounded-lg px-3 py-2.5">
+                  <div className="text-sm text-amber-800">
+                    Beberapa SKU sudah terdaftar di sistem. Pilih tindakan untuk baris tersebut:
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      checked={duplicateStrategy === "skip"}
+                      onChange={() => setDuplicateStrategy("skip")}
+                    />
+                    Lewati (Skip) — jangan ubah data yang sudah ada
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      checked={duplicateStrategy === "update"}
+                      onChange={() => setDuplicateStrategy("update")}
+                    />
+                    Update — timpa data yang sudah ada dengan data dari file
+                  </label>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="btn-primary disabled:opacity-40"
+                disabled={hasBlockingIssues || importableCount === 0 || importing}
+                onClick={confirmImport}
+              >
+                {importing ? "Mengimport..." : `Confirm Import (${importableCount} baris)`}
+              </button>
+            </>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }
