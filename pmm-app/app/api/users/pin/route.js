@@ -41,9 +41,10 @@ export async function POST(req) {
       }
     }
 
-    // Enforce that no two users share the same PIN.
-    const allUsers = await listRecords("users", { includeInactive: true });
-    const collision = allUsers.find(
+    // Enforce that no two ACTIVE users share the same PIN (a deleted user's old
+    // PIN is free to be reused).
+    const activeUsers = await listRecords("users");
+    const collision = activeUsers.find(
       (u) => u.id !== userId && u.pinHash && verifyPinHash(newPin, u.pinSalt, u.pinHash)
     );
     if (collision) {

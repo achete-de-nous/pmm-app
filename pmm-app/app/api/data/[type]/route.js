@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isValidType } from "@/lib/entities";
-import { listRecords, createRecord, findByField } from "@/lib/store";
+import { listRecords, createRecord } from "@/lib/store";
 import { hashPin, generateSalt, verifyPinHash, isValidPinFormat } from "@/lib/hash";
 
 export async function GET(req, { params }) {
@@ -20,7 +20,10 @@ export async function POST(req, { params }) {
     if (type === "users") {
       const name = (data.name || "").trim();
       if (!name) return NextResponse.json({ error: "Nama tidak boleh kosong" }, { status: 400 });
-      const existing = await findByField("users", "name", name);
+      // Only currently-active users block a name/PIN from being reused — a deleted
+      // user's name and PIN both become available again for a new registration.
+      const activeUsers = await listRecords("users");
+      const existing = activeUsers.find((u) => (u.name || "").toLowerCase() === name.toLowerCase());
       if (existing) {
         return NextResponse.json(
           { error: `Nama "${name}" sudah terdaftar. Gunakan nama lain.` },
@@ -30,8 +33,7 @@ export async function POST(req, { params }) {
       if (!isValidPinFormat(data.pin)) {
         return NextResponse.json({ error: "PIN harus 4-8 digit angka" }, { status: 400 });
       }
-      const allUsers = await listRecords("users", { includeInactive: true });
-      const collision = allUsers.find((u) => u.pinHash && verifyPinHash(data.pin, u.pinSalt, u.pinHash));
+      const collision = activeUsers.find((u) => u.pinHash && verifyPinHash(data.pin, u.pinSalt, u.pinHash));
       if (collision) {
         return NextResponse.json(
           { error: "PIN ini sudah dipakai user lain. Gunakan PIN yang berbeda." },
