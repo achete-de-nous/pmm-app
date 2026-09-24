@@ -15,10 +15,34 @@ function computeTotals(materials, hargaJahit) {
   return { materialRows, totalMaterials, totalCOGS };
 }
 
-// POST body: { action: "add" | "change", vendorId, productNameNoVariant, moq, materials, hargaJahit, note, user, supersedeId (for "change") }
+// POST body variants:
+//  - { action: "add", vendorId, productNameNoVariant, moq, materials, hargaJahit, note, user }
+//  - { action: "change", vendorId, productNameNoVariant, moq, materials, hargaJahit, note, user, supersedeId }
+//      supersedeId: id of the specific record being edited (from the per-card Edit button),
+//      or omitted to look up the current record for that Vendor+Product+MOQ combo (the
+//      dropdown "Change COGS" flow).
+//  - { action: "delete", id, user }
 export async function POST(req) {
   const body = await req.json();
-  const { action, vendorId, productNameNoVariant, moq, materials, hargaJahit, note, user, supersedeId } = body;
+  const { action, user } = body;
+
+  if (action === "delete") {
+    const { id } = body;
+    if (!id) return NextResponse.json({ error: "id wajib diisi" }, { status: 400 });
+    const target = await getRecord("cogsRecords", id);
+    if (!target) return NextResponse.json({ error: "COGS tidak ditemukan" }, { status: 404 });
+    if (target.deleted) return NextResponse.json({ error: "COGS ini sudah dihapus sebelumnya" }, { status: 400 });
+    const now = new Date().toISOString();
+    const updated = await updateRecord(
+      "cogsRecords",
+      id,
+      { isCurrent: false, deleted: true, deletedBy: user || "Unknown", deletedAt: now },
+      user
+    );
+    return NextResponse.json({ data: updated });
+  }
+
+  const { vendorId, productNameNoVariant, moq, materials, hargaJahit, note, supersedeId } = body;
 
   if (!vendorId || !productNameNoVariant || moq == null || moq === "") {
     return NextResponse.json({ error: "Vendor, Product, dan MOQ wajib diisi" }, { status: 400 });
@@ -61,7 +85,10 @@ export async function POST(req) {
         hargaJahit: num(hargaJahit),
         totalCOGS,
         isCurrent: true,
+        deleted: false,
         previousRecordId: null,
+        editedBy: null,
+        editedAt: null,
         note: note || "",
       },
       user
@@ -77,7 +104,8 @@ export async function POST(req) {
         { status: 400 }
       );
     }
-    // mark old as historical (not current), keep all its data intact
+    const now = new Date().toISOString();
+    // mark old as historical (superseded), keep all its data intact
     await updateRecord("cogsRecords", target.id, { isCurrent: false }, user);
 
     const record = await createRecord(
@@ -92,7 +120,10 @@ export async function POST(req) {
         hargaJahit: num(hargaJahit),
         totalCOGS,
         isCurrent: true,
+        deleted: false,
         previousRecordId: target.id,
+        editedBy: user || "Unknown",
+        editedAt: now,
         note: note || "",
       },
       user

@@ -4,6 +4,7 @@ import { apiList, apiPost } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import EmptyState from "@/components/EmptyState";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
@@ -12,6 +13,7 @@ const UNITS = ["Meter", "Pcs"];
 const SEWING_TYPE = "Sewing";
 
 const emptyRow = () => ({ materialName: "", fabricCategory: "", usage: "", pricePerUnit: "", unit: "" });
+const MODAL_TITLES = { add: "Add COGS", change: "Change COGS", edit: "Edit COGS" };
 
 export default function CogsPage() {
   const { currentUser } = useUser();
@@ -22,11 +24,15 @@ export default function CogsPage() {
   const [cogsRecords, setCogsRecords] = useState([]);
 
   const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const [modalMode, setModalMode] = useState(null); // "add" | "change"
+  const [modalMode, setModalMode] = useState(null); // "add" | "change" | "edit"
   const [form, setForm] = useState({ vendorId: "", productNameNoVariant: "", moq: "", hargaJahit: "", note: "" });
   const [rows, setRows] = useState([emptyRow()]);
   const [matchedRecord, setMatchedRecord] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+
+  const [filterVendor, setFilterVendor] = useState("");
+  const [filterProduct, setFilterProduct] = useState("");
 
   const refresh = async () => {
     const [v, p, m, c] = await Promise.all([
@@ -56,10 +62,36 @@ export default function CogsPage() {
     [vendors]
   );
 
-  const currentRecords = useMemo(() => cogsRecords.filter((c) => c.isCurrent), [cogsRecords]);
+  // Filter options are drawn from vendors/products actually present in COGS data.
+  const filterVendorOptions = useMemo(() => {
+    const map = new Map();
+    cogsRecords.forEach((c) => {
+      if (c.vendorId) map.set(c.vendorId, c.vendorName);
+    });
+    return Array.from(map, ([id, name]) => ({ id, name }));
+  }, [cogsRecords]);
+
+  const filterProductOptions = useMemo(() => {
+    return Array.from(new Set(cogsRecords.map((c) => c.productName).filter(Boolean)));
+  }, [cogsRecords]);
+
+  const matchesFilter = (c) => {
+    if (filterVendor && c.vendorId !== filterVendor) return false;
+    if (filterProduct && c.productName !== filterProduct) return false;
+    return true;
+  };
+
+  const currentRecords = useMemo(
+    () => cogsRecords.filter((c) => c.isCurrent && !c.deleted).filter(matchesFilter),
+    [cogsRecords, filterVendor, filterProduct]
+  );
   const historyRecords = useMemo(
-    () => cogsRecords.filter((c) => !c.isCurrent).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
-    [cogsRecords]
+    () =>
+      cogsRecords
+        .filter((c) => !c.isCurrent)
+        .filter(matchesFilter)
+        .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")),
+    [cogsRecords, filterVendor, filterProduct]
   );
 
   const resetForm = () => {
@@ -74,7 +106,32 @@ export default function CogsPage() {
     setActionMenuOpen(false);
   };
 
-  // In "change" mode, look up the existing current record once vendor+product+moq are all filled in.
+  // Open the Edit modal directly from a specific card - pre-fills everything from
+  // that exact record and never re-looks-it-up by combo (unlike "change").
+  const openEditRecord = (record) => {
+    setModalMode("edit");
+    setMatchedRecord(record);
+    setForm({
+      vendorId: record.vendorId,
+      productNameNoVariant: record.productName,
+      moq: record.moq,
+      hargaJahit: record.hargaJahit,
+      note: "",
+    });
+    setRows(
+      record.materials.map((m) => ({
+        materialName: m.materialName,
+        fabricCategory: m.fabricCategory || "",
+        usage: m.usage,
+        pricePerUnit: m.pricePerUnit,
+        unit: m.unit,
+      }))
+    );
+  };
+
+  // In "change" mode (the dropdown flow), look up the existing current record once
+  // vendor+product+moq are all filled in. "edit" mode skips this - matchedRecord is
+  // already fixed to the specific card the person clicked Edit on.
   useEffect(() => {
     if (modalMode !== "change") return;
     if (!form.vendorId || !form.productNameNoVariant || form.moq === "") {
@@ -132,14 +189,17 @@ export default function CogsPage() {
       showToast("Minimal 1 material wajib ditambahkan", "error");
       return;
     }
-    if (modalMode === "change" && !matchedRecord) {
+    if ((modalMode === "change" || modalMode === "edit") && !matchedRecord) {
       showToast("Tidak ditemukan COGS aktif untuk kombinasi ini. Gunakan Add COGS.", "error");
       return;
     }
     setSaving(true);
     try {
+      // Both "change" (dropdown flow) and "edit" (per-card button) hit the same
+      // backend "change" action: supersede the matched record with a new version.
+      const backendAction = modalMode === "add" ? "add" : "change";
       await apiPost("/api/cogs", {
-        action: modalMode,
+        action: backendAction,
         vendorId: form.vendorId,
         productNameNoVariant: form.productNameNoVariant,
         moq: form.moq,
@@ -160,48 +220,95 @@ export default function CogsPage() {
     }
   };
 
+  const confirmDelete = async () => {
+    try {
+      await apiPost("/api/cogs", { action: "delete", id: deleteTarget.id, user: currentUser });
+      showToast("COGS dihapus");
+      setDeleteTarget(null);
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const resetFilters = () => {
+    setFilterVendor("");
+    setFilterProduct("");
+  };
+
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between relative">
+      <div className="flex items-start justify-between relative gap-3 flex-wrap">
         <div className="text-lg font-semibold">COGS</div>
-        <div className="relative">
-          <button className="btn-primary" onClick={() => setActionMenuOpen((o) => !o)}>
-            + COGS
-          </button>
-          {actionMenuOpen && (
-            <div className="absolute right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-20">
-              <button className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50" onClick={() => openModal("add")}>
-                Add COGS
+        <div className="flex flex-col items-end gap-2">
+          <div className="relative">
+            <button className="btn-primary" onClick={() => setActionMenuOpen((o) => !o)}>
+              + COGS
+            </button>
+            {actionMenuOpen && (
+              <div className="absolute right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-20">
+                <button className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50" onClick={() => openModal("add")}>
+                  Add COGS
+                </button>
+                <button className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50" onClick={() => openModal("change")}>
+                  Change COGS
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="flex gap-2 items-center flex-wrap justify-end">
+            <select className="input text-xs py-1.5" value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)}>
+              <option value="">Semua Vendor</option>
+              {filterVendorOptions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+            <select className="input text-xs py-1.5" value={filterProduct} onChange={(e) => setFilterProduct(e.target.value)}>
+              <option value="">Semua Product</option>
+              {filterProductOptions.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            {(filterVendor || filterProduct) && (
+              <button className="text-xs text-gray-400 hover:text-ink" onClick={resetFilters}>
+                Reset
               </button>
-              <button className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50" onClick={() => openModal("change")}>
-                Change COGS
-              </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
       <div>
         <div className="font-medium mb-2 text-sm text-gray-600">Current COGS</div>
         {currentRecords.length === 0 ? (
-          <EmptyState title="Belum ada COGS. Gunakan Add COGS untuk membuat yang pertama." />
+          <EmptyState
+            title={
+              filterVendor || filterProduct
+                ? "Tidak ada COGS untuk filter ini."
+                : "Belum ada COGS. Gunakan Add COGS untuk membuat yang pertama."
+            }
+          />
         ) : (
           <div className="flex flex-col gap-3">
             {currentRecords.map((c) => (
               <div key={c.id} className="card">
-                <div className="flex items-start justify-between">
+                <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="font-medium">{c.productName}</div>
                     <div className="text-xs text-gray-500">
                       {c.vendorName} · MOQ {c.moq} pcs
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <div className="text-xs text-gray-500">Total COGS</div>
                     <div className="font-semibold">{idr(c.totalCOGS)}</div>
                   </div>
                 </div>
-                <div className="mt-3 text-sm">
+                <div className="mt-3 text-sm overflow-x-auto">
                   <table className="w-full">
                     <thead className="text-left text-gray-500 text-xs">
                       <tr>
@@ -238,7 +345,23 @@ export default function CogsPage() {
                   </div>
                 </div>
                 <div className="text-xs text-gray-400 mt-2">
-                  Diupdate oleh {c.updatedBy} · {c.updatedAt ? new Date(c.updatedAt).toLocaleString("id-ID") : ""}
+                  {c.editedBy ? (
+                    <>
+                      Diedit oleh {c.editedBy} · {c.editedAt ? new Date(c.editedAt).toLocaleString("id-ID") : ""}
+                    </>
+                  ) : (
+                    <>
+                      Dibuat oleh {c.createdBy} · {c.createdAt ? new Date(c.createdAt).toLocaleString("id-ID") : ""}
+                    </>
+                  )}
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button className="btn-secondary text-xs" onClick={() => openEditRecord(c)}>
+                    Edit
+                  </button>
+                  <button className="text-xs text-gray-400 hover:text-red-600 px-3 py-2" onClick={() => setDeleteTarget(c)}>
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}
@@ -249,7 +372,7 @@ export default function CogsPage() {
       <div>
         <div className="font-medium mb-2 text-sm text-gray-600">COGS History</div>
         {historyRecords.length === 0 ? (
-          <EmptyState title="Belum ada perubahan COGS." />
+          <EmptyState title="Belum ada perubahan atau penghapusan COGS." />
         ) : (
           <div className="overflow-x-auto card p-0">
             <table className="w-full text-sm">
@@ -259,8 +382,9 @@ export default function CogsPage() {
                   <th className="px-3 py-2">Vendor</th>
                   <th className="px-3 py-2 text-right">MOQ</th>
                   <th className="px-3 py-2 text-right">Total COGS</th>
-                  <th className="px-3 py-2">User</th>
-                  <th className="px-3 py-2">Date</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">By</th>
+                  <th className="px-3 py-2">At</th>
                 </tr>
               </thead>
               <tbody>
@@ -270,8 +394,23 @@ export default function CogsPage() {
                     <td className="px-3 py-2">{h.vendorName}</td>
                     <td className="px-3 py-2 text-right">{h.moq}</td>
                     <td className="px-3 py-2 text-right">{idr(h.totalCOGS)}</td>
-                    <td className="px-3 py-2">{h.createdBy}</td>
-                    <td className="px-3 py-2">{h.createdAt ? new Date(h.createdAt).toLocaleDateString("id-ID") : ""}</td>
+                    <td className="px-3 py-2">
+                      {h.deleted ? (
+                        <span className="text-red-600 text-xs px-2 py-0.5 rounded-full border border-red-200">Deleted</span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded-full border border-gray-200">Superseded</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">{h.deleted ? h.deletedBy : h.createdBy}</td>
+                    <td className="px-3 py-2">
+                      {h.deleted
+                        ? h.deletedAt
+                          ? new Date(h.deletedAt).toLocaleString("id-ID")
+                          : ""
+                        : h.createdAt
+                        ? new Date(h.createdAt).toLocaleString("id-ID")
+                        : ""}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -280,7 +419,7 @@ export default function CogsPage() {
         )}
       </div>
 
-      <Modal open={!!modalMode} onClose={() => setModalMode(null)} title={modalMode === "add" ? "Add COGS" : "Change COGS"} wide>
+      <Modal open={!!modalMode} onClose={() => setModalMode(null)} title={MODAL_TITLES[modalMode] || ""} wide>
         <form onSubmit={submit} className="flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -431,13 +570,23 @@ export default function CogsPage() {
 
           <button
             type="submit"
-            disabled={saving || (modalMode === "change" && !matchedRecord)}
+            disabled={saving || ((modalMode === "change" || modalMode === "edit") && !matchedRecord)}
             className="btn-primary mt-2"
           >
             {saving ? "Menyimpan..." : "Simpan"}
           </button>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+        title="Hapus COGS"
+        message={`Yakin ingin menghapus COGS "${deleteTarget?.productName}" (${deleteTarget?.vendorName}, MOQ ${deleteTarget?.moq})? Data tetap tersimpan di COGS History beserta siapa dan kapan yang menghapus.`}
+        confirmLabel="Hapus"
+        danger
+      />
     </div>
   );
 }

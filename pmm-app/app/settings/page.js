@@ -21,15 +21,19 @@ export default function SettingsPage() {
   const submitAddUser = async (e) => {
     e.preventDefault();
     if (!newName.trim()) return;
-    await addUser(newName.trim());
-    setNewName("");
-    showToast("User ditambahkan");
+    try {
+      await addUser(newName.trim());
+      setNewName("");
+      showToast("User ditambahkan");
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   };
 
-  const archiveUser = async (u) => {
+  const deleteUser = async (u) => {
     try {
       await apiDelete("users", u.id, currentUser);
-      showToast(`${u.name} diarsipkan`);
+      showToast(`${u.name} dihapus dari daftar user aktif`);
       refreshUsers();
     } catch (err) {
       showToast(err.message, "error");
@@ -70,12 +74,16 @@ export default function SettingsPage() {
 
       <div className="card">
         <div className="font-medium mb-3">Users</div>
+        <div className="text-xs text-gray-400 mb-3">
+          User yang dihapus tidak lagi bisa dipilih untuk login, tetapi seluruh histori aktivitas yang pernah mereka
+          lakukan tetap tersimpan dan tetap menampilkan nama mereka.
+        </div>
         <div className="flex flex-col gap-2 mb-3">
           {users.map((u) => (
             <div key={u.id} className="flex items-center justify-between border border-gray-100 rounded-lg px-3 py-2">
               <span>{u.name}</span>
-              <button className="text-xs text-gray-400 hover:text-red-600" onClick={() => archiveUser(u)}>
-                Archive
+              <button className="text-xs text-gray-400 hover:text-red-600" onClick={() => deleteUser(u)}>
+                Delete
               </button>
             </div>
           ))}

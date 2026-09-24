@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useUser } from "./UserContext";
+import { useToast } from "./ToastContext";
 import Modal from "./Modal";
 
 const NAV = [
@@ -21,6 +22,7 @@ const NAV = [
 export default function AppShell({ children }) {
   const pathname = usePathname();
   const { users, currentUser, setCurrentUser, addUser } = useUser();
+  const { showToast } = useToast();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -31,9 +33,13 @@ export default function AppShell({ children }) {
 
   const handleAdd = async () => {
     if (!newName.trim()) return;
-    await addUser(newName.trim());
-    setNewName("");
-    setPickerOpen(false);
+    try {
+      await addUser(newName.trim());
+      setNewName("");
+      setPickerOpen(false);
+    } catch (err) {
+      showToast(err.message, "error");
+    }
   };
 
   return (

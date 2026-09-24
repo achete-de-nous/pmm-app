@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isValidType } from "@/lib/entities";
-import { listRecords, createRecord } from "@/lib/store";
+import { listRecords, createRecord, findByField } from "@/lib/store";
 
 export async function GET(req, { params }) {
   const { type } = params;
@@ -16,6 +16,18 @@ export async function POST(req, { params }) {
   const body = await req.json();
   const { user, ...data } = body;
   try {
+    if (type === "users") {
+      const name = (data.name || "").trim();
+      if (!name) return NextResponse.json({ error: "Nama tidak boleh kosong" }, { status: 400 });
+      const existing = await findByField("users", "name", name);
+      if (existing) {
+        return NextResponse.json(
+          { error: `Nama "${name}" sudah terdaftar. Gunakan nama lain.` },
+          { status: 400 }
+        );
+      }
+      data.name = name;
+    }
     const record = await createRecord(type, data, user);
     return NextResponse.json({ data: record });
   } catch (e) {

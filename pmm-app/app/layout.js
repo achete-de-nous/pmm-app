@@ -2,6 +2,7 @@ import "./globals.css";
 import { ToastProvider } from "@/components/ToastContext";
 import { UserProvider } from "@/components/UserContext";
 import PinGate from "@/components/PinGate";
+import UserGate from "@/components/UserGate";
 import AppShell from "@/components/AppShell";
 
 export const metadata = {
@@ -16,7 +17,9 @@ export default function RootLayout({ children }) {
         <ToastProvider>
           <UserProvider>
             <PinGate>
-              <AppShell>{children}</AppShell>
+              <UserGate>
+                <AppShell>{children}</AppShell>
+              </UserGate>
             </PinGate>
           </UserProvider>
         </ToastProvider>

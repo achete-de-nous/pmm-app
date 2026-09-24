@@ -17,7 +17,7 @@ export const ENTITIES = {
   vendorTypes: { label: "Vendor Type", nameField: "name", softDelete: false },
   products: { label: "Product", nameField: "productName", softDelete: false },
   productionPlans: { label: "Production Plan", nameField: "articleName", immutable: false },
-  cogsRecords: { label: "COGS", nameField: "productName", immutable: false },
+  cogsRecords: { label: "COGS", nameField: "productName", softDelete: true, immutable: false },
   reconciliations: { label: "Reconciliation", nameField: "materialName", immutable: true },
   auditHistory: { label: "Audit History", nameField: "summary", immutable: true },
   settings: { label: "Settings", nameField: "key", immutable: false },
