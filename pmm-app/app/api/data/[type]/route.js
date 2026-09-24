@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isValidType } from "@/lib/entities";
 import { listRecords, createRecord, findByField } from "@/lib/store";
+import { hashPin, generateSalt, verifyPinHash, isValidPinFormat } from "@/lib/hash";
 
 export async function GET(req, { params }) {
   const { type } = params;
@@ -26,7 +27,22 @@ export async function POST(req, { params }) {
           { status: 400 }
         );
       }
+      if (!isValidPinFormat(data.pin)) {
+        return NextResponse.json({ error: "PIN harus 4-8 digit angka" }, { status: 400 });
+      }
+      const allUsers = await listRecords("users", { includeInactive: true });
+      const collision = allUsers.find((u) => u.pinHash && verifyPinHash(data.pin, u.pinSalt, u.pinHash));
+      if (collision) {
+        return NextResponse.json(
+          { error: "PIN ini sudah dipakai user lain. Gunakan PIN yang berbeda." },
+          { status: 400 }
+        );
+      }
+      const salt = generateSalt();
       data.name = name;
+      data.pinHash = hashPin(data.pin, salt);
+      data.pinSalt = salt;
+      delete data.pin;
     }
     const record = await createRecord(type, data, user);
     return NextResponse.json({ data: record });

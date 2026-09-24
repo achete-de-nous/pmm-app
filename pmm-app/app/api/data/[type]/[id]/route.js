@@ -15,6 +15,13 @@ export async function PATCH(req, { params }) {
   if (!isValidType(type)) return NextResponse.json({ error: "Unknown type" }, { status: 404 });
   const body = await req.json();
   const { user, ...patch } = body;
+  if (type === "users") {
+    // PIN fields may only be changed through the dedicated /api/users/pin endpoint,
+    // which hashes the PIN server-side. Strip them out if a client tries to set them directly.
+    delete patch.pin;
+    delete patch.pinHash;
+    delete patch.pinSalt;
+  }
   try {
     const record = await updateRecord(type, id, patch, user);
     return NextResponse.json({ data: record });

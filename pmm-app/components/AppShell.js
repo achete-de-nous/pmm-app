@@ -3,8 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { useUser } from "./UserContext";
-import { useToast } from "./ToastContext";
-import Modal from "./Modal";
+import ConfirmDialog from "./ConfirmDialog";
 
 const NAV = [
   { href: "/", label: "Dashboard" },
@@ -21,26 +20,8 @@ const NAV = [
 
 export default function AppShell({ children }) {
   const pathname = usePathname();
-  const { users, currentUser, setCurrentUser, addUser } = useUser();
-  const { showToast } = useToast();
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [newName, setNewName] = useState("");
-
-  const handlePick = (name) => {
-    setCurrentUser(name);
-    setPickerOpen(false);
-  };
-
-  const handleAdd = async () => {
-    if (!newName.trim()) return;
-    try {
-      await addUser(newName.trim());
-      setNewName("");
-      setPickerOpen(false);
-    } catch (err) {
-      showToast(err.message, "error");
-    }
-  };
+  const { currentUser, logout } = useUser();
+  const [confirmLogout, setConfirmLogout] = useState(false);
 
   return (
     <div className="min-h-screen bg-white text-ink font-sans">
@@ -48,11 +29,11 @@ export default function AppShell({ children }) {
         <div className="flex items-center justify-between px-4 py-3">
           <div className="font-semibold tracking-tight">Production &amp; Material</div>
           <button
-            onClick={() => setPickerOpen(true)}
+            onClick={() => setConfirmLogout(true)}
             className="text-sm border border-gray-300 rounded-full px-3 py-1.5 flex items-center gap-1.5"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-ink inline-block" />
-            {currentUser || "Siapa kamu?"}
+            {currentUser}
           </button>
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-2 no-scrollbar">
@@ -75,33 +56,17 @@ export default function AppShell({ children }) {
 
       <main className="px-4 py-5 max-w-5xl mx-auto">{children}</main>
 
-      <Modal open={pickerOpen} onClose={() => setPickerOpen(false)} title="Siapa kamu?">
-        <div className="flex flex-col gap-2 mb-4">
-          {users.length === 0 && <div className="text-sm text-gray-500">Belum ada user. Tambahkan nama di bawah.</div>}
-          {users.map((u) => (
-            <button
-              key={u.id}
-              onClick={() => handlePick(u.name)}
-              className={`text-left px-3 py-2 rounded-lg border ${
-                currentUser === u.name ? "border-ink bg-gray-50 font-medium" : "border-gray-200"
-              }`}
-            >
-              {u.name}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Nama baru"
-            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm"
-          />
-          <button onClick={handleAdd} className="bg-ink text-white rounded-lg px-4 py-2 text-sm">
-            Tambah
-          </button>
-        </div>
-      </Modal>
+      <ConfirmDialog
+        open={confirmLogout}
+        onClose={() => setConfirmLogout(false)}
+        onConfirm={() => {
+          setConfirmLogout(false);
+          logout();
+        }}
+        title="Ganti User"
+        message={`Keluar dari sesi "${currentUser}"? Untuk masuk lagi sebagai user manapun (termasuk dirimu sendiri), PIN harus dimasukkan ulang.`}
+        confirmLabel="Keluar"
+      />
     </div>
   );
 }
