@@ -5,15 +5,12 @@ import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
 import EmptyState from "@/components/EmptyState";
-import AutocompleteInput from "@/components/AutocompleteInput";
 
-const TX_TYPES = [
-  { value: "Purchase", label: "Purchase (Supplier → Warehouse/Vendor)", defaultSource: "Supplier" },
-  { value: "Transfer", label: "Transfer (Warehouse → Vendor)", defaultSource: "Warehouse" },
-  { value: "VendorTransfer", label: "Vendor Transfer (Vendor → Vendor)" },
-  { value: "Return", label: "Return (Vendor → Warehouse)" },
-  { value: "DirectPurchase", label: "Direct Purchase (Supplier → Vendor)", defaultSource: "Supplier" },
-];
+const UNITS = ["Meter", "Pcs"];
+const num = (v) => Number(v) || 0;
+const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
+
+const emptyForm = { fromLoc: "", toLoc: "", materialName: "", quantity: "", unit: "", deliveryDate: "", reference: "", note: "" };
 
 export default function MaterialTransactionsPage() {
   const { currentUser } = useUser();
@@ -23,19 +20,8 @@ export default function MaterialTransactionsPage() {
   const [transactions, setTransactions] = useState([]);
   const [vendorBalances, setVendorBalances] = useState([]);
   const [open, setOpen] = useState(false);
-
-  const [form, setForm] = useState({
-    date: "",
-    txType: "Purchase",
-    materialName: "",
-    quantity: "",
-    unit: "",
-    cogs: "",
-    sourceVendorId: "",
-    destVendorId: "",
-    reference: "",
-    note: "",
-  });
+  const [materialSearch, setMaterialSearch] = useState("");
+  const [form, setForm] = useState(emptyForm);
 
   const refresh = async () => {
     const [m, v, t, vb] = await Promise.all([
@@ -56,36 +42,48 @@ export default function MaterialTransactionsPage() {
 
   const vendorName = (id) => vendors.find((v) => v.id === id)?.name || id;
 
-  const resolveSourceDest = () => {
-    const type = form.txType;
-    if (type === "Purchase") return { source: "Supplier", destination: form.destVendorId || "Warehouse" };
-    if (type === "Transfer") return { source: "Warehouse", destination: form.destVendorId };
-    if (type === "VendorTransfer") return { source: form.sourceVendorId, destination: form.destVendorId };
-    if (type === "Return") return { source: form.sourceVendorId, destination: "Warehouse" };
-    if (type === "DirectPurchase") return { source: "Supplier", destination: form.destVendorId };
-    return { source: "", destination: "" };
+  // "Dari"/"Ke" dropdown: Supplier and Warehouse are always available as fixed
+  // locations alongside every Vendor - material still needs to enter the system
+  // from a Supplier into the Warehouse before it can move on to a sewing vendor.
+  const locationOptions = useMemo(() => ["Supplier", "Warehouse", ...vendors.map((v) => v.id)], [vendors]);
+  const locationLabel = (id) => (id === "Warehouse" || id === "Supplier" ? id : vendorName(id));
+
+  const filteredMaterialOptions = useMemo(() => {
+    const q = materialSearch.trim().toLowerCase();
+    if (!q) return materials;
+    return materials.filter((m) => m.name.toLowerCase().includes(q));
+  }, [materials, materialSearch]);
+
+  const selectedMaterial = materials.find((m) => m.name === form.materialName);
+  const pricePerUnit = num(selectedMaterial?.currentCOGS);
+  const materialCost = num(form.quantity) * pricePerUnit;
+
+  const selectMaterial = (name) => {
+    const mat = materials.find((m) => m.name === name);
+    setForm((f) => ({ ...f, materialName: name, unit: mat?.unit || f.unit }));
   };
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.materialName || !form.quantity) return;
-    const { source, destination } = resolveSourceDest();
-    if (!destination && form.txType !== "Purchase") {
-      showToast("Tujuan wajib dipilih", "error");
+    if (!form.materialName || !form.quantity || !form.toLoc || !form.fromLoc) {
+      showToast("Dari, Ke, Material, dan Quantity wajib diisi", "error");
+      return;
+    }
+    if (form.fromLoc === form.toLoc) {
+      showToast("Dari dan Ke tidak boleh sama", "error");
       return;
     }
     try {
       await apiCreate(
         "materialTransactions",
         {
-          date: form.date,
-          txType: form.txType,
           materialName: form.materialName,
           quantity: Number(form.quantity),
           unit: form.unit,
-          cogs: Number(form.cogs) || 0,
-          source,
-          destination,
+          materialCost,
+          source: form.fromLoc,
+          destination: form.toLoc,
+          deliveryDate: form.deliveryDate,
           reference: form.reference,
           note: form.note,
         },
@@ -93,15 +91,13 @@ export default function MaterialTransactionsPage() {
       );
       showToast("Transaksi material disimpan");
       setOpen(false);
-      setForm({ date: "", txType: "Purchase", materialName: "", quantity: "", unit: "", cogs: "", sourceVendorId: "", destVendorId: "", reference: "", note: "" });
+      setForm(emptyForm);
+      setMaterialSearch("");
       refresh();
     } catch (err) {
       showToast(err.message, "error");
     }
   };
-
-  const needsSourceVendor = form.txType === "VendorTransfer" || form.txType === "Return";
-  const needsDestVendor = form.txType !== "Return";
 
   const vendorGroups = useMemo(() => {
     const groups = {};
@@ -145,7 +141,7 @@ export default function MaterialTransactionsPage() {
                         <td className="py-1 text-right">
                           {r.qty} {r.unit}
                         </td>
-                        <td className="py-1 text-right">Rp{Number(r.totalValue || 0).toLocaleString("id-ID")}</td>
+                        <td className="py-1 text-right">{idr(r.totalValue)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -165,24 +161,25 @@ export default function MaterialTransactionsPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-left text-gray-500">
                 <tr>
-                  <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2">Delivery Date</th>
                   <th className="px-3 py-2">Material</th>
                   <th className="px-3 py-2 text-right">Qty</th>
                   <th className="px-3 py-2">From → To</th>
+                  <th className="px-3 py-2 text-right">Material Cost</th>
                 </tr>
               </thead>
               <tbody>
                 {transactions.map((t) => (
                   <tr key={t.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2">{t.date || "-"}</td>
-                    <td className="px-3 py-2">{t.txType}</td>
+                    <td className="px-3 py-2">{t.deliveryDate || t.date || "-"}</td>
                     <td className="px-3 py-2 font-medium">{t.materialName}</td>
-                    <td className="px-3 py-2 text-right">{t.quantity}</td>
-                    <td className="px-3 py-2 text-gray-500">
-                      {t.source === "Supplier" || t.source === "Warehouse" ? t.source : vendorName(t.source)} →{" "}
-                      {t.destination === "Warehouse" ? "Warehouse" : vendorName(t.destination)}
+                    <td className="px-3 py-2 text-right">
+                      {t.quantity} {t.unit}
                     </td>
+                    <td className="px-3 py-2 text-gray-500">
+                      {locationLabel(t.source)} → {locationLabel(t.destination)}
+                    </td>
+                    <td className="px-3 py-2 text-right">{idr(t.materialCost ?? t.cogs)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -193,24 +190,49 @@ export default function MaterialTransactionsPage() {
 
       <Modal open={open} onClose={() => setOpen(false)} title="Add Material Transaction">
         <form onSubmit={submit} className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Dari</label>
+              <select className="input" value={form.fromLoc} onChange={(e) => setForm({ ...form, fromLoc: e.target.value })}>
+                <option value="">Pilih lokasi</option>
+                {locationOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {locationLabel(id)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Ke</label>
+              <select className="input" value={form.toLoc} onChange={(e) => setForm({ ...form, toLoc: e.target.value })}>
+                <option value="">Pilih lokasi</option>
+                {locationOptions.map((id) => (
+                  <option key={id} value={id}>
+                    {locationLabel(id)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div>
-            <label className="label">Transaction Type</label>
-            <select className="input" value={form.txType} onChange={(e) => setForm({ ...form, txType: e.target.value })}>
-              {TX_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
+            <label className="label">Material</label>
+            <input
+              className="input mb-1"
+              placeholder="Cari material..."
+              value={materialSearch}
+              onChange={(e) => setMaterialSearch(e.target.value)}
+            />
+            <select className="input" value={form.materialName} onChange={(e) => selectMaterial(e.target.value)}>
+              <option value="">Pilih material</option>
+              {filteredMaterialOptions.map((m) => (
+                <option key={m.id} value={m.name}>
+                  {m.name}
                 </option>
               ))}
             </select>
           </div>
-          <div>
-            <label className="label">Material</label>
-            <AutocompleteInput
-              value={form.materialName}
-              onChange={(v) => setForm({ ...form, materialName: v })}
-              options={materials.map((m) => m.name)}
-            />
-          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Quantity</label>
@@ -218,45 +240,27 @@ export default function MaterialTransactionsPage() {
             </div>
             <div>
               <label className="label">Unit</label>
-              <input className="input" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
-            </div>
-          </div>
-          {needsSourceVendor && (
-            <div>
-              <label className="label">Source Vendor</label>
-              <select className="input" value={form.sourceVendorId} onChange={(e) => setForm({ ...form, sourceVendorId: e.target.value })}>
-                <option value="">Pilih vendor</option>
-                {vendors.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
+              <select className="input" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}>
+                <option value="">Pilih unit</option>
+                {UNITS.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
                   </option>
                 ))}
               </select>
             </div>
-          )}
-          {needsDestVendor && (
-            <div>
-              <label className="label">Destination Vendor</label>
-              <select className="input" value={form.destVendorId} onChange={(e) => setForm({ ...form, destVendorId: e.target.value })}>
-                <option value="">Pilih vendor</option>
-                {vendors.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Date</label>
-              <input type="date" className="input" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} />
-            </div>
-            <div>
-              <label className="label">COGS</label>
-              <input type="number" className="input" value={form.cogs} onChange={(e) => setForm({ ...form, cogs: e.target.value })} />
-            </div>
           </div>
+
+          <div>
+            <label className="label">Delivery Date</label>
+            <input type="date" className="input" value={form.deliveryDate} onChange={(e) => setForm({ ...form, deliveryDate: e.target.value })} />
+          </div>
+
+          <div className="bg-gray-50 rounded-lg px-3 py-2 flex items-center justify-between text-sm">
+            <span className="text-gray-500">Material Cost (Qty × Harga/Unit {idr(pricePerUnit)})</span>
+            <span className="font-semibold">{idr(materialCost)}</span>
+          </div>
+
           <div>
             <label className="label">Reference</label>
             <input className="input" value={form.reference} onChange={(e) => setForm({ ...form, reference: e.target.value })} />

@@ -8,13 +8,14 @@ import ConfirmDialog from "./ConfirmDialog";
 const NAV = [
   { href: "/", label: "Dashboard" },
   { href: "/production", label: "Production" },
-  { href: "/sales", label: "Weekly Sales" },
+  { href: "/defects", label: "Defect Qty" },
   { href: "/materials", label: "Materials" },
   { href: "/materials/transactions", label: "Transactions" },
   { href: "/vendors", label: "Vendors" },
   { href: "/products", label: "Product" },
   { href: "/cogs", label: "COGS" },
-  { href: "/reconciliation", label: "Reconciliation" },
+  { href: "/trial-balance", label: "Trial Balance" },
+  { href: "/finance", label: "Finance" },
   { href: "/settings", label: "Settings" },
 ];
 

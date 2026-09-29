@@ -113,8 +113,7 @@ export default function VendorDetailPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-left text-gray-500">
                 <tr>
-                  <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Type</th>
+                  <th className="px-3 py-2">Delivery Date</th>
                   <th className="px-3 py-2">Material</th>
                   <th className="px-3 py-2 text-right">Qty</th>
                 </tr>
@@ -122,8 +121,7 @@ export default function VendorDetailPage() {
               <tbody>
                 {transactions.map((t) => (
                   <tr key={t.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2">{t.date || "-"}</td>
-                    <td className="px-3 py-2">{t.txType}</td>
+                    <td className="px-3 py-2">{t.deliveryDate || t.date || "-"}</td>
                     <td className="px-3 py-2">{t.materialName}</td>
                     <td className="px-3 py-2 text-right">{t.quantity}</td>
                   </tr>

@@ -7,9 +7,6 @@
 
 export const ENTITIES = {
   users: { label: "User", nameField: "name", softDelete: true },
-  articles: { label: "Article", nameField: "name", softDelete: true },
-  finishedInitialBalances: { label: "Initial Finished Product Balance", nameField: "articleName", immutable: false },
-  weeklySales: { label: "Weekly Sales", nameField: "week", immutable: true },
   materials: { label: "Material", nameField: "name", softDelete: true },
   materialCategories: { label: "Fabric Category", nameField: "name", softDelete: false },
   materialTransactions: { label: "Material Transaction", nameField: "materialName", immutable: true },
@@ -18,7 +15,9 @@ export const ENTITIES = {
   products: { label: "Product", nameField: "productName", softDelete: false },
   productionPlans: { label: "Production Plan", nameField: "articleName", immutable: false },
   cogsRecords: { label: "COGS", nameField: "productName", softDelete: true, immutable: false },
-  reconciliations: { label: "Reconciliation", nameField: "materialName", immutable: true },
+  defectRecords: { label: "Defect Qty", nameField: "articleName", immutable: false },
+  financeRecords: { label: "Finance", nameField: "articleName", immutable: false },
+  reconciliations: { label: "Trial Balance Check", nameField: "materialName", immutable: false },
   auditHistory: { label: "Audit History", nameField: "summary", immutable: true },
   settings: { label: "Settings", nameField: "key", immutable: false },
 };

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiList, apiCreate, apiUpdate, apiDelete, apiPost } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
@@ -27,6 +27,10 @@ export default function ProductsPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [searchName, setSearchName] = useState("");
+  const [searchCollection, setSearchCollection] = useState("");
+  const [searchSku, setSearchSku] = useState("");
+  const [filterCollection, setFilterCollection] = useState("");
 
   // Import flow state
   const [importOpen, setImportOpen] = useState(false);
@@ -171,6 +175,32 @@ export default function ProductsPage() {
     }
   };
 
+  const collectionOptions = useMemo(
+    () => Array.from(new Set(products.map((p) => p.collection).filter(Boolean))),
+    [products]
+  );
+
+  const filteredProducts = useMemo(() => {
+    const n = searchName.trim().toLowerCase();
+    const c = searchCollection.trim().toLowerCase();
+    const s = searchSku.trim().toLowerCase();
+    return products.filter((p) => {
+      if (filterCollection && p.collection !== filterCollection) return false;
+      if (n && !(p.productName || "").toLowerCase().includes(n)) return false;
+      if (c && !(p.collection || "").toLowerCase().includes(c)) return false;
+      if (s && !(p.sku || "").toLowerCase().includes(s)) return false;
+      return true;
+    });
+  }, [products, searchName, searchCollection, searchSku, filterCollection]);
+
+  const hasActiveSearch = searchName || searchCollection || searchSku || filterCollection;
+  const resetSearch = () => {
+    setSearchName("");
+    setSearchCollection("");
+    setSearchSku("");
+    setFilterCollection("");
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -185,8 +215,32 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {products.length === 0 ? (
-        <EmptyState title="No products yet. Add your first product." />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <input className="input" placeholder="Search Product Name" value={searchName} onChange={(e) => setSearchName(e.target.value)} />
+        <input className="input" placeholder="Search SKU" value={searchSku} onChange={(e) => setSearchSku(e.target.value)} />
+        <input
+          className="input"
+          placeholder="Search Collection"
+          value={searchCollection}
+          onChange={(e) => setSearchCollection(e.target.value)}
+        />
+        <select className="input" value={filterCollection} onChange={(e) => setFilterCollection(e.target.value)}>
+          <option value="">Semua Collection</option>
+          {collectionOptions.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </div>
+      {hasActiveSearch && (
+        <button className="text-xs text-gray-400 hover:text-ink self-start -mt-4" onClick={resetSearch}>
+          Reset pencarian
+        </button>
+      )}
+
+      {filteredProducts.length === 0 ? (
+        <EmptyState title={products.length === 0 ? "No products yet. Add your first product." : "Tidak ada product yang cocok."} />
       ) : (
         <div className="overflow-x-auto card p-0">
           <table className="w-full text-sm">
@@ -201,7 +255,7 @@ export default function ProductsPage() {
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => (
+              {filteredProducts.map((p) => (
                 <tr key={p.id} className="border-t border-gray-100">
                   <td className="px-3 py-2">{p.sku || "-"}</td>
                   <td className="px-3 py-2 font-medium">{p.productName}</td>

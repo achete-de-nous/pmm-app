@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { apiList, apiCreate, apiUpdate, apiDelete, apiCalc } from "@/lib/api-client";
+import { apiList, apiCreate, apiUpdate, apiDelete } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
@@ -31,23 +31,16 @@ export default function MaterialsPage() {
   const [materials, setMaterials] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [balances, setBalances] = useState([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
   const refresh = async () => {
-    const [m, v, c, wb] = await Promise.all([
-      apiList("materials"),
-      apiList("vendors"),
-      apiList("materialCategories"),
-      apiCalc("warehouse-balances"),
-    ]);
+    const [m, v, c] = await Promise.all([apiList("materials"), apiList("vendors"), apiList("materialCategories")]);
     setMaterials(m);
     setVendors(v);
     setCategories(c);
-    setBalances(wb);
   };
 
   useEffect(() => {
@@ -87,8 +80,14 @@ export default function MaterialsPage() {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.name) {
-      showToast("Nama material wajib diisi", "error");
+    const missing = [];
+    if (!form.name.trim()) missing.push("Material Name");
+    if (!form.category.trim()) missing.push("Fabric Category");
+    if (!form.vendorId) missing.push("Vendor Fabric Name");
+    if (form.currentCOGS === "" || form.currentCOGS == null) missing.push("Price per Unit");
+    if (!form.unit) missing.push("Unit");
+    if (missing.length > 0) {
+      showToast(`Wajib diisi: ${missing.join(", ")}`, "error");
       return;
     }
     try {
@@ -181,44 +180,14 @@ export default function MaterialsPage() {
         )}
       </div>
 
-      <div>
-        <div className="font-medium mb-2 text-sm text-gray-600">Warehouse Balance</div>
-        {balances.length === 0 ? (
-          <EmptyState title="Belum ada balance di warehouse." hint="Balance dihitung otomatis dari Material Transactions." />
-        ) : (
-          <div className="overflow-x-auto card p-0">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-left text-gray-500">
-                <tr>
-                  <th className="px-3 py-2">Material</th>
-                  <th className="px-3 py-2 text-right">Qty</th>
-                  <th className="px-3 py-2">Unit</th>
-                  <th className="px-3 py-2 text-right">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {balances.map((b) => (
-                  <tr key={b.materialName} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium">{b.materialName}</td>
-                    <td className="px-3 py-2 text-right">{b.qty}</td>
-                    <td className="px-3 py-2">{b.unit}</td>
-                    <td className="px-3 py-2 text-right">{idr(b.totalValue)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
       <Modal open={open} onClose={() => setOpen(false)} title={editing ? "Edit Material" : "Add Material"}>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <div>
-            <label className="label">Material Name</label>
+            <label className="label">Material Name *</label>
             <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <div>
-            <label className="label">Fabric Category</label>
+            <label className="label">Fabric Category *</label>
             <SelectWithCustom
               value={form.category}
               onChange={(v) => setForm({ ...form, category: v })}
@@ -228,7 +197,7 @@ export default function MaterialsPage() {
             />
           </div>
           <div>
-            <label className="label">Vendor Fabric Name</label>
+            <label className="label">Vendor Fabric Name *</label>
             <select className="input" value={form.vendorId} onChange={(e) => setForm({ ...form, vendorId: e.target.value })}>
               <option value="">Pilih vendor</option>
               {vendors.map((v) => (
@@ -240,7 +209,7 @@ export default function MaterialsPage() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Price per Unit</label>
+              <label className="label">Price per Unit *</label>
               <input
                 type="number"
                 className="input"
@@ -249,7 +218,7 @@ export default function MaterialsPage() {
               />
             </div>
             <div>
-              <label className="label">Unit</label>
+              <label className="label">Unit *</label>
               <select className="input" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}>
                 {UNITS.map((u) => (
                   <option key={u} value={u}>

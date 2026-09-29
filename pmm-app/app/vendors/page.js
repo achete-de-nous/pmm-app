@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { apiList, apiCreate, apiUpdate, apiDelete } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
@@ -11,7 +11,17 @@ import SelectWithCustom from "@/components/SelectWithCustom";
 
 const DEFAULT_VENDOR_TYPES = ["Fabric", "Sewing", "Accessories", "Packaging", "Dyeing & Printing", "Bordir"];
 
-const emptyForm = { name: "", vendorCode: "", vendorType: "", contactPerson: "", phone: "", email: "", address: "", notes: "" };
+const emptyForm = {
+  name: "",
+  vendorCode: "",
+  vendorType: "",
+  contactPerson: "",
+  phone: "",
+  email: "",
+  address: "",
+  website: "",
+  notes: "",
+};
 
 export default function VendorsPage() {
   const { currentUser } = useUser();
@@ -22,6 +32,8 @@ export default function VendorsPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [search, setSearch] = useState("");
+  const [filterType, setFilterType] = useState("");
 
   const refresh = async () => {
     const [v, vt] = await Promise.all([apiList("vendors"), apiList("vendorTypes")]);
@@ -59,6 +71,7 @@ export default function VendorsPage() {
       phone: v.phone || "",
       email: v.email || "",
       address: v.address || "",
+      website: v.website || "",
       notes: v.notes || "",
     });
     setOpen(true);
@@ -66,8 +79,19 @@ export default function VendorsPage() {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.name) return;
+    const missing = [];
+    if (!form.name.trim()) missing.push("Vendor Name");
+    if (!form.vendorType.trim()) missing.push("Vendor Type");
+    if (!form.contactPerson.trim()) missing.push("Contact Person");
+    if (!form.phone.trim()) missing.push("Phone");
+    if (!form.address.trim()) missing.push("Address");
+    if (missing.length > 0) {
+      showToast(`Wajib diisi: ${missing.join(", ")}`, "error");
+      return;
+    }
     try {
+      // Edits always go through apiUpdate (patch) so existing vendor data is
+      // updated in place, never reset/recreated.
       if (editing) {
         await apiUpdate("vendors", editing.id, form, currentUser);
         showToast("Vendor diupdate");
@@ -95,6 +119,15 @@ export default function VendorsPage() {
     }
   };
 
+  const filteredVendors = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return vendors.filter((v) => {
+      if (filterType && v.vendorType !== filterType) return false;
+      if (!q) return true;
+      return (v.name || "").toLowerCase().includes(q) || (v.vendorType || "").toLowerCase().includes(q);
+    });
+  }, [vendors, search, filterType]);
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -104,11 +137,39 @@ export default function VendorsPage() {
         </button>
       </div>
 
-      {vendors.length === 0 ? (
-        <EmptyState title="No vendors yet. Add your first vendor." />
+      <div className="flex gap-2 flex-wrap">
+        <input
+          className="input flex-1 min-w-[160px]"
+          placeholder="Cari Vendor Name atau Vendor Type..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select className="input w-auto" value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+          <option value="">Semua Vendor Type</option>
+          {typeOptions.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+        {(search || filterType) && (
+          <button
+            className="text-xs text-gray-400 hover:text-ink self-center"
+            onClick={() => {
+              setSearch("");
+              setFilterType("");
+            }}
+          >
+            Reset
+          </button>
+        )}
+      </div>
+
+      {filteredVendors.length === 0 ? (
+        <EmptyState title={vendors.length === 0 ? "No vendors yet. Add your first vendor." : "Tidak ada vendor yang cocok."} />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {vendors.map((v) => (
+          {filteredVendors.map((v) => (
             <div key={v.id} className="card">
               <div className="flex items-start justify-between gap-2">
                 <Link href={`/vendors/${v.id}`} className="min-w-0">
@@ -130,6 +191,16 @@ export default function VendorsPage() {
                   </button>
                 </div>
               </div>
+              {v.website && (
+                <a
+                  href={/^https?:\/\//.test(v.website) ? v.website : `https://${v.website}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm text-blue-600 underline block mt-1"
+                >
+                  {v.website}
+                </a>
+              )}
             </div>
           ))}
         </div>
@@ -138,7 +209,7 @@ export default function VendorsPage() {
       <Modal open={open} onClose={() => setOpen(false)} title={editing ? "Edit Vendor" : "Add Vendor"}>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <div>
-            <label className="label">Vendor Name</label>
+            <label className="label">Vendor Name *</label>
             <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -147,7 +218,7 @@ export default function VendorsPage() {
               <input className="input" value={form.vendorCode} onChange={(e) => setForm({ ...form, vendorCode: e.target.value })} />
             </div>
             <div>
-              <label className="label">Vendor Type</label>
+              <label className="label">Vendor Type *</label>
               <SelectWithCustom
                 value={form.vendorType}
                 onChange={(v) => setForm({ ...form, vendorType: v })}
@@ -159,11 +230,11 @@ export default function VendorsPage() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Contact Person</label>
+              <label className="label">Contact Person *</label>
               <input className="input" value={form.contactPerson} onChange={(e) => setForm({ ...form, contactPerson: e.target.value })} />
             </div>
             <div>
-              <label className="label">Phone</label>
+              <label className="label">Phone *</label>
               <input className="input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
             </div>
           </div>
@@ -172,8 +243,17 @@ export default function VendorsPage() {
             <input className="input" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           </div>
           <div>
-            <label className="label">Address</label>
+            <label className="label">Address *</label>
             <input className="input" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
+          </div>
+          <div>
+            <label className="label">Website</label>
+            <input
+              className="input"
+              placeholder="https://..."
+              value={form.website}
+              onChange={(e) => setForm({ ...form, website: e.target.value })}
+            />
           </div>
           <div>
             <label className="label">Notes</label>

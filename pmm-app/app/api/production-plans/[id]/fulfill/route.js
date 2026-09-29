@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRecord, updateRecord } from "@/lib/store";
+import { computePlanStatus } from "@/lib/calc";
 
 export async function POST(req, { params }) {
   const { id } = params;
@@ -19,15 +20,16 @@ export async function POST(req, { params }) {
     );
   }
 
-  let status = "Pending";
-  if (plan.confirmed) status = "Confirmed";
-  if (fulfilled > 0 && fulfilled < planned) status = "Partially Fulfilled";
-  if (fulfilled >= planned && planned > 0) status = "Fulfilled";
+  // Fulfilled Date always tracks the most recent update to Fulfilled Qty.
+  const now = new Date().toISOString();
+  const draft = { ...plan, fulfilledQty: fulfilled, fulfilledDate: now };
+  const status = computePlanStatus(draft);
+  const delayDate = status === "Delayed" ? now : plan.delayDate || null;
 
   const updated = await updateRecord(
     "productionPlans",
     id,
-    { fulfilledQty: fulfilled, unfulfilledQty: Math.max(0, planned - fulfilled), status },
+    { fulfilledQty: fulfilled, fulfilledDate: now, status, delayDate },
     user
   );
 

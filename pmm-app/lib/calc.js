@@ -2,50 +2,6 @@ import { listRecords } from "./store";
 
 const num = (v) => (typeof v === "number" && !isNaN(v) ? v : Number(v) || 0);
 
-// ---------- Finished product / Need to Produce ----------
-// NeedToProduce(article) = max(0, TotalSalesQty - InitialBalance - TotalFulfilledQty)
-// AvailableStock(article) = InitialBalance + TotalFulfilledQty - TotalSalesQty
-export async function computeArticleStockSummary() {
-  const [articles, initialBalances, weeklySales, productionPlans] = await Promise.all([
-    listRecords("articles"),
-    listRecords("finishedInitialBalances"),
-    listRecords("weeklySales"),
-    listRecords("productionPlans"),
-  ]);
-
-  const byArticle = {};
-  for (const a of articles) {
-    byArticle[a.name] = {
-      articleName: a.name,
-      articleId: a.id,
-      initialBalance: 0,
-      totalSales: 0,
-      totalFulfilled: 0,
-      totalPlanned: 0,
-    };
-  }
-  const ensure = (name) => {
-    if (!byArticle[name]) {
-      byArticle[name] = { articleName: name, articleId: null, initialBalance: 0, totalSales: 0, totalFulfilled: 0, totalPlanned: 0 };
-    }
-    return byArticle[name];
-  };
-
-  for (const b of initialBalances) ensure(b.articleName).initialBalance += num(b.qty);
-  for (const s of weeklySales) ensure(s.articleName).totalSales += num(s.salesQty);
-  for (const p of productionPlans) {
-    const row = ensure(p.articleName);
-    row.totalFulfilled += num(p.fulfilledQty);
-    row.totalPlanned += num(p.plannedQty);
-  }
-
-  return Object.values(byArticle).map((row) => {
-    const availableStock = row.initialBalance + row.totalFulfilled - row.totalSales;
-    const needToProduce = Math.max(0, row.totalSales - row.initialBalance - row.totalFulfilled);
-    return { ...row, availableStock, needToProduce };
-  });
-}
-
 // ---------- Material balances ----------
 // Balance(material, location) = Incoming - Outgoing (from Material Transactions only)
 // location is either "Warehouse" or a vendor id
@@ -101,43 +57,150 @@ export async function computeVendorBalances(vendorId) {
   return filtered;
 }
 
+// ---------- COGS resolution ----------
+// Picks the current (non-deleted) COGS record for a vendor+product combo, tiered by MOQ:
+// the highest MOQ that is <= plannedQty, falling back to the lowest MOQ available.
+export function resolveCogsForPlan(vendorId, productName, plannedQty, cogsRecords) {
+  const candidates = cogsRecords.filter(
+    (c) => c.isCurrent && !c.deleted && c.vendorId === vendorId && c.productName === productName
+  );
+  if (candidates.length === 0) return null;
+  const qty = num(plannedQty);
+  const sorted = candidates.slice().sort((a, b) => num(a.moq) - num(b.moq));
+  const fitting = sorted.filter((c) => num(c.moq) <= qty);
+  return fitting.length > 0 ? fitting[fitting.length - 1] : sorted[0];
+}
+
+// ---------- Production plan status / delay logic ----------
+export function computePlanStatus(plan) {
+  const planned = num(plan.plannedQty);
+  const fulfilled = num(plan.fulfilledQty);
+  let status = plan.status || "Pending";
+
+  if (fulfilled > 0) {
+    status = fulfilled >= planned && planned > 0 ? "DONE" : "Partially Fulfilled";
+  }
+
+  if (plan.fulfilledDate && plan.readyStockProdDate && plan.fulfilledDate > plan.readyStockProdDate) {
+    status = "Delayed";
+  }
+
+  return status;
+}
+
+// ---------- Trial Balance ledger ----------
+// Combines Material Transactions (in/out of a vendor) with Production material usage
+// (derived from each plan's resolved COGS x qty) into one running-balance ledger per
+// Material + Location, sorted earliest date first.
+export async function computeTrialBalance(materialNameFilter) {
+  const [materials, transactions, vendors, plans, cogsRecords] = await Promise.all([
+    listRecords("materials"),
+    listRecords("materialTransactions"),
+    listRecords("vendors", { includeInactive: true }),
+    listRecords("productionPlans"),
+    listRecords("cogsRecords"),
+  ]);
+
+  const vendorNameById = Object.fromEntries(vendors.map((v) => [v.id, v.name]));
+  const locLabel = (loc) => (loc === "Warehouse" ? "Warehouse" : vendorNameById[loc] || loc);
+
+  const entries = [];
+
+  for (const t of transactions) {
+    if (materialNameFilter && t.materialName !== materialNameFilter) continue;
+    const qty = num(t.quantity);
+    if (t.source && t.source !== "Supplier") {
+      entries.push({
+        materialName: t.materialName,
+        location: t.source,
+        locationLabel: locLabel(t.source),
+        date: t.deliveryDate || t.date || t.createdAt || "",
+        type: "Transaction",
+        description: `Keluar ke ${locLabel(t.destination)}`,
+        qtyChange: -qty,
+        valueChange: -num(t.materialCost ?? t.cogs),
+      });
+    }
+    if (t.destination) {
+      entries.push({
+        materialName: t.materialName,
+        location: t.destination,
+        locationLabel: locLabel(t.destination),
+        date: t.deliveryDate || t.date || t.createdAt || "",
+        type: "Transaction",
+        description: `Masuk dari ${t.source === "Supplier" ? "Supplier" : locLabel(t.source)}`,
+        qtyChange: qty,
+        valueChange: num(t.materialCost ?? t.cogs),
+      });
+    }
+  }
+
+  for (const p of plans) {
+    const cogs = resolveCogsForPlan(p.vendorId, p.articleName, p.plannedQty, cogsRecords);
+    if (!cogs) continue;
+    const qtyUsed = num(p.fulfilledQty) > 0 ? num(p.fulfilledQty) : num(p.plannedQty);
+    for (const m of cogs.materials || []) {
+      if (materialNameFilter && m.materialName !== materialNameFilter) continue;
+      const usedQty = num(m.usage) * qtyUsed;
+      entries.push({
+        materialName: m.materialName,
+        location: p.vendorId,
+        locationLabel: locLabel(p.vendorId),
+        date: p.wipDate || p.createdAt || "",
+        type: "Production Usage",
+        description: `${p.articleName} · Batch ${p.batch || "-"}`,
+        qtyChange: -usedQty,
+        valueChange: -(usedQty * num(m.pricePerUnit)),
+      });
+    }
+  }
+
+  entries.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+  const running = {};
+  const materialByName = Object.fromEntries(materials.map((m) => [m.name, m]));
+  return entries.map((e) => {
+    const k = `${e.materialName}::${e.location}`;
+    running[k] = (running[k] || 0) + e.qtyChange;
+    return {
+      ...e,
+      unit: materialByName[e.materialName]?.unit || "",
+      runningBalance: running[k],
+      rowKey: `${k}::${e.type}::${e.date}::${e.description}`,
+    };
+  });
+}
+
 // ---------- Dashboard ----------
 export async function computeDashboard() {
-  const [articles, materials, vendors, weeklySales, productionPlans, cogsRecords, reconciliations, stockSummary, materialBalances] =
+  const [materials, vendors, productionPlans, cogsRecords, defectRecords, financeRecords, materialBalances] =
     await Promise.all([
-      listRecords("articles"),
       listRecords("materials"),
       listRecords("vendors"),
-      listRecords("weeklySales"),
       listRecords("productionPlans"),
       listRecords("cogsRecords"),
-      listRecords("reconciliations"),
-      computeArticleStockSummary(),
+      listRecords("defectRecords"),
+      listRecords("financeRecords"),
       computeMaterialBalances(),
     ]);
 
-  const totalNeedToProduce = stockSummary.reduce((s, r) => s + r.needToProduce, 0);
-  const activePlans = productionPlans.filter((p) => p.status !== "Fulfilled" && p.status !== "Cancelled");
+  const activePlans = productionPlans.filter((p) => p.status !== "DONE" && p.status !== "Fulfilled");
   const totalUnfulfilled = productionPlans.reduce((s, p) => s + Math.max(0, num(p.plannedQty) - num(p.fulfilledQty)), 0);
   const warehouseValue = materialBalances.filter((r) => r.location === "Warehouse").reduce((s, r) => s + r.totalValue, 0);
   const vendorValue = materialBalances.filter((r) => r.isVendor).reduce((s, r) => s + r.totalValue, 0);
-  const recentWeeklySalesQty = weeklySales.reduce((s, r) => s + num(r.salesQty), 0);
-  const lastReconVariance = reconciliations
-    .slice()
-    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0]?.variance;
+  const totalDefectQty = defectRecords.reduce((s, d) => s + num(d.majorQty) + num(d.minorQty), 0);
+  const unpaidFinance = financeRecords.filter((f) => !f.paid).length;
 
   return {
-    totalArticles: articles.length,
     totalMaterials: materials.length,
     totalVendors: vendors.length,
-    totalWeeklySalesQty: recentWeeklySalesQty,
-    totalNeedToProduce,
     activeProductionPlans: activePlans.length,
     totalProductionUnfulfilled: totalUnfulfilled,
     warehouseMaterialValue: warehouseValue,
     vendorMaterialValue: vendorValue,
-    cogsChangeCount: cogsRecords.length,
-    lastReconciliationVariance: lastReconVariance ?? null,
-    isEmpty: articles.length === 0 && materials.length === 0 && vendors.length === 0,
+    cogsChangeCount: cogsRecords.filter((c) => c.isCurrent && !c.deleted).length,
+    totalDefectQty,
+    unpaidFinanceCount: unpaidFinance,
+    isEmpty: materials.length === 0 && vendors.length === 0 && productionPlans.length === 0,
   };
 }

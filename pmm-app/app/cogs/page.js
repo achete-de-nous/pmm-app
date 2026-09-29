@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { apiList, apiPost } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
@@ -13,7 +13,7 @@ const UNITS = ["Meter", "Pcs"];
 const SEWING_TYPE = "Sewing";
 
 const emptyRow = () => ({ materialName: "", fabricCategory: "", usage: "", pricePerUnit: "", unit: "" });
-const MODAL_TITLES = { add: "Add COGS", change: "Change COGS", edit: "Edit COGS" };
+const MODAL_TITLES = { add: "Add COGS", edit: "Edit COGS" };
 
 export default function CogsPage() {
   const { currentUser } = useUser();
@@ -23,8 +23,8 @@ export default function CogsPage() {
   const [materials, setMaterials] = useState([]);
   const [cogsRecords, setCogsRecords] = useState([]);
 
-  const [actionMenuOpen, setActionMenuOpen] = useState(false);
-  const [modalMode, setModalMode] = useState(null); // "add" | "change" | "edit"
+  const [modalMode, setModalMode] = useState(null); // "add" | "edit"
+  const [expandedId, setExpandedId] = useState(null);
   const [form, setForm] = useState({ vendorId: "", productNameNoVariant: "", moq: "", hargaJahit: "", note: "" });
   const [rows, setRows] = useState([emptyRow()]);
   const [matchedRecord, setMatchedRecord] = useState(null);
@@ -63,17 +63,20 @@ export default function CogsPage() {
   );
 
   // Filter options are drawn from vendors/products actually present in COGS data.
+  // Deleted COGS must never surface in any filter/dropdown anywhere.
+  const nonDeletedCogs = useMemo(() => cogsRecords.filter((c) => !c.deleted), [cogsRecords]);
+
   const filterVendorOptions = useMemo(() => {
     const map = new Map();
-    cogsRecords.forEach((c) => {
+    nonDeletedCogs.forEach((c) => {
       if (c.vendorId) map.set(c.vendorId, c.vendorName);
     });
     return Array.from(map, ([id, name]) => ({ id, name }));
-  }, [cogsRecords]);
+  }, [nonDeletedCogs]);
 
   const filterProductOptions = useMemo(() => {
-    return Array.from(new Set(cogsRecords.map((c) => c.productName).filter(Boolean)));
-  }, [cogsRecords]);
+    return Array.from(new Set(nonDeletedCogs.map((c) => c.productName).filter(Boolean)));
+  }, [nonDeletedCogs]);
 
   const matchesFilter = (c) => {
     if (filterVendor && c.vendorId !== filterVendor) return false;
@@ -129,34 +132,6 @@ export default function CogsPage() {
     );
   };
 
-  // In "change" mode (the dropdown flow), look up the existing current record once
-  // vendor+product+moq are all filled in. "edit" mode skips this - matchedRecord is
-  // already fixed to the specific card the person clicked Edit on.
-  useEffect(() => {
-    if (modalMode !== "change") return;
-    if (!form.vendorId || !form.productNameNoVariant || form.moq === "") {
-      setMatchedRecord(null);
-      return;
-    }
-    const found = currentRecords.find(
-      (c) => c.vendorId === form.vendorId && c.productName === form.productNameNoVariant && num(c.moq) === num(form.moq)
-    );
-    setMatchedRecord(found || null);
-    if (found) {
-      setRows(
-        found.materials.map((m) => ({
-          materialName: m.materialName,
-          fabricCategory: m.fabricCategory || "",
-          usage: m.usage,
-          pricePerUnit: m.pricePerUnit,
-          unit: m.unit,
-        }))
-      );
-      setForm((f) => ({ ...f, hargaJahit: found.hargaJahit, note: "" }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modalMode, form.vendorId, form.productNameNoVariant, form.moq, currentRecords]);
-
   const updateRow = (idx, patch) => {
     setRows((r) => r.map((row, i) => (i === idx ? { ...row, ...patch } : row)));
   };
@@ -189,14 +164,14 @@ export default function CogsPage() {
       showToast("Minimal 1 material wajib ditambahkan", "error");
       return;
     }
-    if ((modalMode === "change" || modalMode === "edit") && !matchedRecord) {
+    if (modalMode === "edit" && !matchedRecord) {
       showToast("Tidak ditemukan COGS aktif untuk kombinasi ini. Gunakan Add COGS.", "error");
       return;
     }
     setSaving(true);
     try {
-      // Both "change" (dropdown flow) and "edit" (per-card button) hit the same
-      // backend "change" action: supersede the matched record with a new version.
+      // "edit" (per-card button) hits the backend "change" action: supersede the
+      // matched record with a new version, keeping the old one in History.
       const backendAction = modalMode === "add" ? "add" : "change";
       await apiPost("/api/cogs", {
         action: backendAction,
@@ -241,21 +216,9 @@ export default function CogsPage() {
       <div className="flex items-start justify-between relative gap-3 flex-wrap">
         <div className="text-lg font-semibold">COGS</div>
         <div className="flex flex-col items-end gap-2">
-          <div className="relative">
-            <button className="btn-primary" onClick={() => setActionMenuOpen((o) => !o)}>
-              + COGS
-            </button>
-            {actionMenuOpen && (
-              <div className="absolute right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden z-20">
-                <button className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50" onClick={() => openModal("add")}>
-                  Add COGS
-                </button>
-                <button className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50" onClick={() => openModal("change")}>
-                  Change COGS
-                </button>
-              </div>
-            )}
-          </div>
+          <button className="btn-primary" onClick={() => openModal("add")}>
+            + COGS
+          </button>
           <div className="flex gap-2 items-center flex-wrap justify-end">
             <select className="input text-xs py-1.5" value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)}>
               <option value="">Semua Vendor</option>
@@ -293,78 +256,101 @@ export default function CogsPage() {
             }
           />
         ) : (
-          <div className="flex flex-col gap-3">
-            {currentRecords.map((c) => (
-              <div key={c.id} className="card">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-medium">{c.productName}</div>
-                    <div className="text-xs text-gray-500">
-                      {c.vendorName} · MOQ {c.moq} pcs
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-xs text-gray-500">Total COGS</div>
-                    <div className="font-semibold">{idr(c.totalCOGS)}</div>
-                  </div>
-                </div>
-                <div className="mt-3 text-sm overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="text-left text-gray-500 text-xs">
-                      <tr>
-                        <th className="py-1">Bahan</th>
-                        <th className="py-1">Category</th>
-                        <th className="py-1 text-right">Usage</th>
-                        <th className="py-1 text-right">Harga/Unit</th>
-                        <th className="py-1 text-right">Total</th>
+          <div className="overflow-x-auto card p-0">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-left text-gray-500">
+                <tr>
+                  <th className="px-3 py-2">Product</th>
+                  <th className="px-3 py-2">Vendor</th>
+                  <th className="px-3 py-2 text-right">MOQ</th>
+                  <th className="px-3 py-2 text-right">Total COGS</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentRecords.map((c) => {
+                  const isOpen = expandedId === c.id;
+                  return (
+                    <Fragment key={c.id}>
+                      <tr
+                        className="border-t border-gray-100 cursor-pointer hover:bg-gray-50"
+                        onClick={() => setExpandedId(isOpen ? null : c.id)}
+                      >
+                        <td className="px-3 py-2 font-medium">{c.productName}</td>
+                        <td className="px-3 py-2 text-gray-500">{c.vendorName}</td>
+                        <td className="px-3 py-2 text-right">{c.moq}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{idr(c.totalCOGS)}</td>
+                        <td className="px-3 py-2 text-right text-xs text-gray-400">{isOpen ? "▲" : "▼"}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {c.materials.map((m, i) => (
-                        <tr key={i} className="border-t border-gray-100">
-                          <td className="py-1">{m.materialName}</td>
-                          <td className="py-1 text-gray-500">{m.fabricCategory || "-"}</td>
-                          <td className="py-1 text-right">
-                            {m.usage} {m.unit}
+                      {isOpen && (
+                        <tr key={`${c.id}-detail`} className="border-t border-gray-100 bg-gray-50/60">
+                          <td colSpan={5} className="px-3 py-3">
+                            <div className="overflow-x-auto">
+                              <table className="w-full">
+                                <thead className="text-left text-gray-500 text-xs">
+                                  <tr>
+                                    <th className="py-1">Bahan</th>
+                                    <th className="py-1">Category</th>
+                                    <th className="py-1 text-right">Usage</th>
+                                    <th className="py-1 text-right">Harga/Unit</th>
+                                    <th className="py-1 text-right">Total</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {c.materials.map((m, i) => (
+                                    <tr key={i} className="border-t border-gray-200">
+                                      <td className="py-1">{m.materialName}</td>
+                                      <td className="py-1 text-gray-500">{m.fabricCategory || "-"}</td>
+                                      <td className="py-1 text-right">
+                                        {m.usage} {m.unit}
+                                      </td>
+                                      <td className="py-1 text-right">{idr(m.pricePerUnit)}</td>
+                                      <td className="py-1 text-right">{idr(m.total)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3 mt-3 text-sm border-t border-gray-200 pt-3">
+                              <div>
+                                <div className="text-xs text-gray-500">Total Bahan</div>
+                                <div>{idr(c.totalMaterials)}</div>
+                              </div>
+                              <div>
+                                <div className="text-xs text-gray-500">Harga Jahit</div>
+                                <div>{idr(c.hargaJahit)}</div>
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-400 mt-2">
+                              {c.editedBy ? (
+                                <>
+                                  Diedit oleh {c.editedBy} · {c.editedAt ? new Date(c.editedAt).toLocaleString("id-ID") : ""}
+                                </>
+                              ) : (
+                                <>
+                                  Dibuat oleh {c.createdBy} · {c.createdAt ? new Date(c.createdAt).toLocaleString("id-ID") : ""}
+                                </>
+                              )}
+                            </div>
+                            <div className="flex gap-2 mt-3">
+                              <button className="btn-secondary text-xs" onClick={(e) => { e.stopPropagation(); openEditRecord(c); }}>
+                                Edit
+                              </button>
+                              <button
+                                className="text-xs text-gray-400 hover:text-red-600 px-3 py-2"
+                                onClick={(e) => { e.stopPropagation(); setDeleteTarget(c); }}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </td>
-                          <td className="py-1 text-right">{idr(m.pricePerUnit)}</td>
-                          <td className="py-1 text-right">{idr(m.total)}</td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="grid grid-cols-2 gap-3 mt-3 text-sm border-t border-gray-100 pt-3">
-                  <div>
-                    <div className="text-xs text-gray-500">Total Bahan</div>
-                    <div>{idr(c.totalMaterials)}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500">Harga Jahit</div>
-                    <div>{idr(c.hargaJahit)}</div>
-                  </div>
-                </div>
-                <div className="text-xs text-gray-400 mt-2">
-                  {c.editedBy ? (
-                    <>
-                      Diedit oleh {c.editedBy} · {c.editedAt ? new Date(c.editedAt).toLocaleString("id-ID") : ""}
-                    </>
-                  ) : (
-                    <>
-                      Dibuat oleh {c.createdBy} · {c.createdAt ? new Date(c.createdAt).toLocaleString("id-ID") : ""}
-                    </>
-                  )}
-                </div>
-                <div className="flex gap-2 mt-3">
-                  <button className="btn-secondary text-xs" onClick={() => openEditRecord(c)}>
-                    Edit
-                  </button>
-                  <button className="text-xs text-gray-400 hover:text-red-600 px-3 py-2" onClick={() => setDeleteTarget(c)}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
@@ -458,12 +444,6 @@ export default function CogsPage() {
             <label className="label">MOQ</label>
             <input type="number" className="input" value={form.moq} onChange={(e) => setForm({ ...form, moq: e.target.value })} />
           </div>
-
-          {modalMode === "change" && form.vendorId && form.productNameNoVariant && form.moq !== "" && !matchedRecord && (
-            <div className="text-sm text-red-600 border border-red-200 bg-red-50 rounded-lg px-3 py-2">
-              Tidak ditemukan COGS aktif untuk kombinasi Vendor + Product + MOQ ini. Gunakan <strong>Add COGS</strong> untuk membuat baru.
-            </div>
-          )}
 
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -570,7 +550,7 @@ export default function CogsPage() {
 
           <button
             type="submit"
-            disabled={saving || ((modalMode === "change" || modalMode === "edit") && !matchedRecord)}
+            disabled={saving || (modalMode === "edit" && !matchedRecord)}
             className="btn-primary mt-2"
           >
             {saving ? "Menyimpan..." : "Simpan"}
