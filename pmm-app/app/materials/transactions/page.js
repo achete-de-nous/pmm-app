@@ -1,15 +1,15 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { apiList, apiCreate, apiCalc } from "@/lib/api-client";
+import { apiList, apiCreate } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
-import EmptyState from "@/components/EmptyState";
 import SearchableSelect from "@/components/SearchableSelect";
 
 const UNITS = ["Meter", "Pcs"];
 const num = (v) => Number(v) || 0;
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
+const ALL_MATERIALS = "__ALL__";
 
 const emptyForm = { fromLoc: "", toLoc: "", materialName: "", quantity: "", unit: "", deliveryDate: "", reference: "", note: "" };
 
@@ -18,23 +18,13 @@ export default function MaterialTransactionsPage() {
   const { showToast } = useToast();
   const [materials, setMaterials] = useState([]);
   const [vendors, setVendors] = useState([]);
-  const [transactions, setTransactions] = useState([]);
-  const [vendorBalances, setVendorBalances] = useState([]);
   const [open, setOpen] = useState(false);
-  const [materialSearch, setMaterialSearch] = useState("");
   const [form, setForm] = useState(emptyForm);
 
   const refresh = async () => {
-    const [m, v, t, vb] = await Promise.all([
-      apiList("materials"),
-      apiList("vendors"),
-      apiList("materialTransactions"),
-      apiCalc("vendor-balances"),
-    ]);
+    const [m, v] = await Promise.all([apiList("materials"), apiList("vendors")]);
     setMaterials(m);
     setVendors(v);
-    setTransactions(t);
-    setVendorBalances(vb);
   };
 
   useEffect(() => {
@@ -54,17 +44,23 @@ export default function MaterialTransactionsPage() {
     [locationOptions, vendors]
   );
 
-  const filteredMaterialOptions = useMemo(() => {
-    const q = materialSearch.trim().toLowerCase();
-    if (!q) return materials;
-    return materials.filter((m) => m.name.toLowerCase().includes(q));
-  }, [materials, materialSearch]);
+  // Material Name filter: an explicit "All" entry shows every material in the
+  // dropdown (the default) - picking a specific one narrows down to just that.
+  const materialFilterOptions = useMemo(
+    () => [{ value: ALL_MATERIALS, label: "All" }, ...materials.map((m) => ({ value: m.name, label: m.name }))],
+    [materials]
+  );
+  const materialFilter = form.materialName || ALL_MATERIALS;
 
   const selectedMaterial = materials.find((m) => m.name === form.materialName);
   const pricePerUnit = num(selectedMaterial?.currentCOGS);
   const materialCost = num(form.quantity) * pricePerUnit;
 
   const selectMaterial = (name) => {
+    if (name === ALL_MATERIALS) {
+      setForm((f) => ({ ...f, materialName: "" }));
+      return;
+    }
     const mat = materials.find((m) => m.name === name);
     setForm((f) => ({ ...f, materialName: name, unit: mat?.unit || f.unit }));
   };
@@ -98,21 +94,11 @@ export default function MaterialTransactionsPage() {
       showToast("Transaksi material disimpan");
       setOpen(false);
       setForm(emptyForm);
-      setMaterialSearch("");
       refresh();
     } catch (err) {
       showToast(err.message, "error");
     }
   };
-
-  const vendorGroups = useMemo(() => {
-    const groups = {};
-    for (const row of vendorBalances) {
-      if (!groups[row.location]) groups[row.location] = { name: row.locationLabel, rows: [] };
-      groups[row.location].rows.push(row);
-    }
-    return Object.values(groups);
-  }, [vendorBalances]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -121,77 +107,6 @@ export default function MaterialTransactionsPage() {
         <button className="btn-primary" onClick={() => setOpen(true)}>
           + Transaction
         </button>
-      </div>
-
-      <div>
-        <div className="font-medium mb-2 text-sm text-gray-600">Vendor Material Balance</div>
-        {vendorGroups.length === 0 ? (
-          <EmptyState title="Belum ada material di vendor." />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {vendorGroups.map((g) => (
-              <div key={g.name} className="card">
-                <div className="font-medium mb-2">{g.name}</div>
-                <table className="w-full text-sm">
-                  <thead className="text-left text-gray-500">
-                    <tr>
-                      <th className="py-1">Material</th>
-                      <th className="py-1 text-right">Qty</th>
-                      <th className="py-1 text-right">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {g.rows.map((r) => (
-                      <tr key={r.materialName} className="border-t border-gray-100">
-                        <td className="py-1">{r.materialName}</td>
-                        <td className="py-1 text-right">
-                          {r.qty} {r.unit}
-                        </td>
-                        <td className="py-1 text-right">{idr(r.totalValue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div>
-        <div className="font-medium mb-2 text-sm text-gray-600">Transaction History</div>
-        {transactions.length === 0 ? (
-          <EmptyState title="No transactions yet." />
-        ) : (
-          <div className="overflow-x-auto card p-0">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-left text-gray-500">
-                <tr>
-                  <th className="px-3 py-2">Delivery Date</th>
-                  <th className="px-3 py-2">Material</th>
-                  <th className="px-3 py-2 text-right">Qty</th>
-                  <th className="px-3 py-2">From → To</th>
-                  <th className="px-3 py-2 text-right">Material Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((t) => (
-                  <tr key={t.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2">{t.deliveryDate || t.date || "-"}</td>
-                    <td className="px-3 py-2 font-medium">{t.materialName}</td>
-                    <td className="px-3 py-2 text-right">
-                      {t.quantity} {t.unit}
-                    </td>
-                    <td className="px-3 py-2 text-gray-500">
-                      {locationLabel(t.source)} → {locationLabel(t.destination)}
-                    </td>
-                    <td className="px-3 py-2 text-right">{idr(t.materialCost ?? t.cogs)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Add Material Transaction">
@@ -218,21 +133,14 @@ export default function MaterialTransactionsPage() {
           </div>
 
           <div>
-            <label className="label">Material</label>
-            <input
-              className="input mb-1"
-              placeholder="Cari material..."
-              value={materialSearch}
-              onChange={(e) => setMaterialSearch(e.target.value)}
+            <label className="label">Material Name</label>
+            <SearchableSelect
+              value={materialFilter}
+              onChange={selectMaterial}
+              options={materialFilterOptions}
+              placeholder="All"
             />
-            <select className="input" value={form.materialName} onChange={(e) => selectMaterial(e.target.value)}>
-              <option value="">Pilih material</option>
-              {filteredMaterialOptions.map((m) => (
-                <option key={m.id} value={m.name}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
+            <div className="text-xs text-gray-400 mt-1">Pilih "All" untuk menampilkan seluruh material, lalu pilih material yang dituju.</div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">

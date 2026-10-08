@@ -1,6 +1,20 @@
 import { NextResponse } from "next/server";
 import { isValidType } from "@/lib/entities";
-import { getRecord, updateRecord, softDeleteRecord } from "@/lib/store";
+import { getRecord, updateRecord, softDeleteRecord, listRecords } from "@/lib/store";
+import { normalizeStatus } from "@/lib/calc";
+
+// Finance must never show a record whose Production Plan is gone or On Hold
+// (REVISI 2, point 7). Called right after a Production Plan is deleted or its
+// status changes to On Hold, so Finance stays in sync immediately rather than
+// only at the next Finance-page sync.
+async function removeFinanceForPlan(planId, user) {
+  if (!planId) return;
+  const financeRecords = await listRecords("financeRecords");
+  const toRemove = financeRecords.filter((f) => (f.planId || f.batchId) === planId);
+  for (const f of toRemove) {
+    await softDeleteRecord("financeRecords", f.id, user || "system");
+  }
+}
 
 // Production Plan date fields that must keep a field-level audit trail
 // (old value -> new value, who, when) per the REVISI spec, surfaced via the
@@ -59,6 +73,9 @@ export async function PATCH(req, { params }) {
       }
     }
     const record = await updateRecord(type, id, finalPatch, user);
+    if (type === "productionPlans" && "status" in patch && normalizeStatus(patch.status) === "On Hold") {
+      await removeFinanceForPlan(id, user);
+    }
     return NextResponse.json({ data: record });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });
@@ -72,6 +89,9 @@ export async function DELETE(req, { params }) {
   const user = url.searchParams.get("user");
   try {
     await softDeleteRecord(type, id, user);
+    if (type === "productionPlans") {
+      await removeFinanceForPlan(id, user);
+    }
     return NextResponse.json({ data: { ok: true } });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });

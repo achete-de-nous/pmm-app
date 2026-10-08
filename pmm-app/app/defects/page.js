@@ -81,7 +81,8 @@ export default function DefectsPage() {
     ? resolveCogs(selectedPlan.vendorId, selectedPlan.productNameNoVariant || selectedPlan.articleName, selectedPlan.plannedQty, cogsRecords)
     : null;
   const cogsPerUnit = selectedCogs?.totalCOGS || 0;
-  const totalQtyPreview = num(form.majorQty) + num(form.minorQty);
+  const historyQtySoFar = (editing?.returnHistory || []).reduce((s, h) => s + num(h.major) + num(h.minor), 0);
+  const totalQtyPreview = num(form.majorQty) + num(form.minorQty) + historyQtySoFar;
   const previewCost = totalQtyPreview * cogsPerUnit;
 
   const totals = useMemo(() => {
@@ -106,7 +107,15 @@ export default function DefectsPage() {
 
   const openEdit = (d) => {
     setEditing(d);
-    setForm({ wipDate: d.wipDate, planId: d.planId, majorQty: d.majorQty, minorQty: d.minorQty });
+    // Edit changes the *original* observed defect qty, not the post-return
+    // totals - the form shows initialMajorQty/initialMinorQty (falling back
+    // to majorQty/minorQty for legacy records with no returnHistory yet).
+    setForm({
+      wipDate: d.wipDate,
+      planId: d.planId,
+      majorQty: d.initialMajorQty ?? d.majorQty,
+      minorQty: d.initialMinorQty ?? d.minorQty,
+    });
     setAddOpen(true);
   };
 
@@ -119,8 +128,15 @@ export default function DefectsPage() {
     const plan = plans.find((p) => p.id === form.planId);
     const cogs = resolveCogs(plan.vendorId, plan.productNameNoVariant || plan.articleName, plan.plannedQty, cogsRecords);
     const cogsPerUnitNow = cogs?.totalCOGS || 0;
-    const majorQty = num(form.majorQty);
-    const minorQty = num(form.minorQty);
+    const initialMajorQty = num(form.majorQty);
+    const initialMinorQty = num(form.minorQty);
+    // Preserve whatever Update Return history already exists on top of the
+    // (possibly just-edited) original defect qty - editing never wipes it.
+    const returnHistory = editing?.returnHistory || [];
+    const histMajor = returnHistory.reduce((s, h) => s + num(h.major), 0);
+    const histMinor = returnHistory.reduce((s, h) => s + num(h.minor), 0);
+    const majorQty = initialMajorQty + histMajor;
+    const minorQty = initialMinorQty + histMinor;
     const totalQty = majorQty + minorQty;
     const payload = {
       wipDate: form.wipDate,
@@ -130,6 +146,8 @@ export default function DefectsPage() {
       vendorId: plan.vendorId,
       vendorName: vendorName(plan.vendorId),
       cogsPerUnit: cogsPerUnitNow,
+      initialMajorQty,
+      initialMinorQty,
       majorQty,
       minorQty,
       totalQty,
@@ -140,7 +158,7 @@ export default function DefectsPage() {
         await apiUpdate("defectRecords", editing.id, payload, currentUser);
         showToast("Defect diupdate");
       } else {
-        await apiCreate("defectRecords", { ...payload, returnedQty: 0 }, currentUser);
+        await apiCreate("defectRecords", { ...payload, returnedQty: 0, returnHistory: [] }, currentUser);
         showToast("Defect disimpan");
       }
       setAddOpen(false);
@@ -160,7 +178,8 @@ export default function DefectsPage() {
   const submitReturn = async (e) => {
     e.preventDefault();
     try {
-      await apiPost(`/api/defects/${returnTarget.id}/return`, {
+      const updated = await apiPost(`/api/defects/${returnTarget.id}/return`, {
+        action: "add",
         qty: Number(returnForm.qty),
         major: Number(returnForm.major) || 0,
         minor: Number(returnForm.minor) || 0,
@@ -168,7 +187,26 @@ export default function DefectsPage() {
         user: currentUser,
       });
       showToast("Return diupdate");
-      setReturnTarget(null);
+      setReturnTarget(updated);
+      setReturnForm({ qty: "", major: "", minor: "", success: "" });
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // Deletes one mistaken return-history entry - only that entry's
+  // contribution is subtracted; the defect's original Major/Minor qty and
+  // every other return entry stay untouched.
+  const deleteReturnEntry = async (returnId) => {
+    try {
+      const updated = await apiPost(`/api/defects/${returnTarget.id}/return`, {
+        action: "delete",
+        returnId,
+        user: currentUser,
+      });
+      showToast("Return history dihapus");
+      setReturnTarget(updated);
       refresh();
     } catch (err) {
       showToast(err.message, "error");
@@ -298,6 +336,10 @@ export default function DefectsPage() {
             <span className="text-gray-500">Total Qty (Major + Minor)</span>
             <span className="font-semibold">{totalQtyPreview}</span>
           </div>
+          <div className="bg-gray-50 rounded-lg px-3 py-2 flex items-center justify-between text-sm">
+            <span className="text-gray-500">Total Returned Qty</span>
+            <span className="font-semibold">{editing?.returnedQty || 0}</span>
+          </div>
           {selectedPlan && (
             <div className="bg-gray-50 rounded-lg px-3 py-2 flex items-center justify-between text-sm">
               <span className="text-gray-500">Cost (COGS {idr(cogsPerUnit)} × Total Qty)</span>
@@ -344,6 +386,34 @@ export default function DefectsPage() {
             Simpan
           </button>
         </form>
+
+        {returnTarget && (returnTarget.returnHistory || []).length > 0 && (
+          <div className="mt-5 pt-4 border-t border-gray-100">
+            <div className="label mb-2">Return History</div>
+            <div className="flex flex-col gap-2">
+              {returnTarget.returnHistory.map((h) => (
+                <div key={h.id} className="flex items-center justify-between text-xs border border-gray-100 rounded-lg px-3 py-2">
+                  <div>
+                    <div>
+                      Qty {h.qty} (Major {h.major} / Minor {h.minor} / Success {h.success})
+                    </div>
+                    <div className="text-gray-400 mt-0.5">
+                      {h.date ? new Date(h.date).toLocaleString("id-ID") : ""} oleh {h.user}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="text-gray-400 hover:text-red-600 px-2"
+                    onClick={() => deleteReturnEntry(h.id)}
+                    title="Hapus entry ini (untuk kesalahan input) - tidak mempengaruhi data defect lainnya"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

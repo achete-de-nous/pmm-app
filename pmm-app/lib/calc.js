@@ -111,62 +111,59 @@ export function computePlanStatus(plan) {
   return { status, isDelayed };
 }
 
-// ---------- Finance: 4 fixed COGS cost categories ----------
-// Every COGS material line carries a `fabricCategory`. We bucket those into the
-// 4 fixed Finance categories the REVISI spec requires. "Bahan utama" and "Celup"
-// map 1:1 to existing Fabric Categories; everything else material-related falls
-// under "Accessories"; "Jahit" comes from the COGS record's own hargaJahit field
-// (it is not a materials line).
-export const FINANCE_CATEGORY_DEFS = [
-  { key: "bahanUtama", label: "Total Harga Bahan Utama" },
-  { key: "accessories", label: "Total Harga Accessories" },
-  { key: "celup", label: "Total Harga Celup" },
-  { key: "jahit", label: "Total Harga Jahit" },
-];
+// ---------- Finance (REVISI 2: simplified single-amount model) ----------
+// Finance now tracks ONE payable amount per procurement/production plan -
+// "Total Harga Bahan Utama" = COGS per unit x Qty - with a single DP and any
+// number of Payment Term (termin) installments against it. DP_MODES/
+// PAYMENT_TERM_MODES back both dropdowns; "Manual" takes a direct nominal
+// input and "Sisanya" (Payment Term only) auto-fills the remainder.
+export const DP_MODES = ["10%", "20%", "30%", "40%", "50%", "75%", "Manual"];
+export const PAYMENT_TERM_MODES = ["10%", "20%", "30%", "40%", "50%", "75%", "Sisanya", "Manual"];
 
-export function categorizeFabric(fabricCategory) {
-  const c = (fabricCategory || "").toLowerCase();
-  if (c.includes("bahan utama")) return "bahanUtama";
-  if (c.includes("celup")) return "celup";
-  return "accessories";
+function modePercent(mode) {
+  if (!mode || mode === "Manual" || mode === "Sisanya") return null;
+  const n = parseFloat(mode);
+  return isNaN(n) ? null : n / 100;
 }
 
-// Builds the 4-category cost breakdown for a resolved COGS record x qty, with
-// default payment fields - used both when auto-creating a Finance record and
-// to recompute totals if the underlying COGS ever changes.
-export function buildFinanceCategories(cogs, qty) {
-  const totals = { bahanUtama: 0, accessories: 0, celup: 0, jahit: 0 };
-  for (const m of cogs?.materials || []) {
-    const key = categorizeFabric(m.fabricCategory);
-    totals[key] += num(m.total) * num(qty);
-  }
-  totals.jahit = num(cogs?.hargaJahit) * num(qty);
-
-  return FINANCE_CATEGORY_DEFS.map((def) => ({
-    key: def.key,
-    label: def.label,
-    totalCost: totals[def.key],
-    dp: 0,
-    remaining: totals[def.key],
-    plannedPaymentDate: null,
-    actualPaymentDate: null,
-    paymentStatus: "Pending",
-  }));
+export function computeDpAmount(dp, total) {
+  if (!dp) return 0;
+  if (dp.mode === "Manual") return num(dp.amount);
+  const pct = modePercent(dp.mode);
+  return pct != null ? pct * num(total) : 0;
 }
 
-// A category counts as fully paid either when its Remaining Cost has hit zero
-// (DP covers the full Total Cost) or when it has been manually marked "Paid
-// (Lunas)" - the latter lets a user close out a category even if the DP
-// bookkeeping lags behind the real-world payment.
-export function isCategoryFullyPaid(cat) {
-  return num(cat.remaining) <= 0 || cat.paymentStatus === "Paid";
+// `priorPaid` = DP + every earlier termin's amount, needed to resolve "Sisanya".
+export function computePaymentAmount(payment, total, priorPaid) {
+  if (!payment) return 0;
+  if (payment.mode === "Manual") return num(payment.amount);
+  if (payment.mode === "Sisanya") return Math.max(0, num(total) - num(priorPaid));
+  const pct = modePercent(payment.mode);
+  return pct != null ? pct * num(total) : 0;
 }
 
-// A Finance record flips to DONE (and moves out of the ALL view into DONE)
-// once every one of its 4 categories is fully paid.
-export function computeFinanceProgress(categories) {
-  if (!categories || categories.length === 0) return "Pending";
-  return categories.every(isCategoryFullyPaid) ? "Done" : "Pending";
+// Resolves live amounts for DP + every termin (in order), plus the totals
+// derived from them. Nothing here is persisted pre-computed - percent-based
+// amounts always recompute from the current Total Harga Bahan Utama.
+export function computeFinanceTotals(record) {
+  const total = num(record.totalHargaBahanUtama);
+  const dpAmount = computeDpAmount(record.dp, total);
+  let priorPaid = dpAmount;
+  const payments = (record.payments || []).map((p) => {
+    const amount = computePaymentAmount(p, total, priorPaid);
+    priorPaid += amount;
+    return { ...p, amount };
+  });
+  const totalPaid = dpAmount + payments.reduce((s, p) => s + num(p.amount), 0);
+  const remaining = Math.max(0, total - totalPaid);
+  return {
+    total,
+    dpAmount,
+    payments,
+    totalPaid,
+    remaining,
+    financeProgress: total > 0 && remaining <= 0 ? "Done" : "Pending",
+  };
 }
 
 // ---------- Trial Balance ledger ----------
