@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { listRecords, createRecord, updateRecord, softDeleteRecord } from "@/lib/store";
-import { resolveCogsForPlan, normalizeStatus, buildFinanceMaterials, sumFinanceMaterials, computeFinanceTotals } from "@/lib/calc";
+import { resolveCogsForPlan, normalizeStatus, buildFinanceCategories, computeFinanceTotals } from "@/lib/calc";
 
 // Finance auto-populates ONLY from Production Plans whose status is
 // CONFIRMED - never from Pending/On Progress/On Hold/Done/Delayed directly.
@@ -41,16 +41,19 @@ export async function POST(req) {
   }
 
   // ---- Refresh material cost breakdown on every surviving Finance record ----
+  // Categories are rebuilt from the CURRENT COGS every sync (price/MOQ can
+  // change), but each category's own dp/payments/status is carried over by
+  // matching category name (buildFinanceCategories' `existingCategories`
+  // param) - a reprice never wipes out payments the user already recorded.
   let refreshed = 0;
   for (const f of surviving) {
     const plan = planById[f.planId || f.batchId];
     const productNameNoVariant = plan.productNameNoVariant || plan.articleName;
     const cogs = resolveCogsForPlan(plan.vendorId, productNameNoVariant, plan.plannedQty, cogsRecords);
     if (!cogs) continue;
-    const materials = buildFinanceMaterials(cogs, plan.plannedQty);
-    const totalHargaBahanUtama = sumFinanceMaterials(materials);
-    const { financeProgress } = computeFinanceTotals({ ...f, materials, totalHargaBahanUtama });
-    await updateRecord("financeRecords", f.id, { materials, totalHargaBahanUtama, financeProgress }, user);
+    const categories = buildFinanceCategories(cogs, plan.plannedQty, f.categories || []);
+    const { financeProgress } = computeFinanceTotals({ ...f, categories });
+    await updateRecord("financeRecords", f.id, { categories, financeProgress }, user);
     refreshed++;
   }
 
@@ -65,8 +68,7 @@ export async function POST(req) {
     const cogs = resolveCogsForPlan(plan.vendorId, productNameNoVariant, plan.plannedQty, cogsRecords);
     if (!cogs) continue; // nothing to finance yet - COGS hasn't been set up for this vendor+product
 
-    const materials = buildFinanceMaterials(cogs, plan.plannedQty);
-    const totalHargaBahanUtama = sumFinanceMaterials(materials);
+    const categories = buildFinanceCategories(cogs, plan.plannedQty, []);
     await createRecord(
       "financeRecords",
       {
@@ -81,10 +83,7 @@ export async function POST(req) {
         readyStockOpsDate: plan.readyStockOpsDate || null,
         readyStockProdDate: plan.readyStockProdDate || null,
         delayDateProd: plan.delayDate || null,
-        materials,
-        totalHargaBahanUtama,
-        dp: { mode: "10%", amount: 0, date: null, status: "Pending", proof: "" },
-        payments: [],
+        categories,
         financeProgress: "Pending",
       },
       user

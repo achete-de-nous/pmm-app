@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { apiList, apiCreate, apiUpdate } from "@/lib/api-client";
+import { apiList, apiCreate, apiUpdate, apiDelete } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import EmptyState from "@/components/EmptyState";
 import SearchableSelect from "@/components/SearchableSelect";
 
@@ -44,6 +45,12 @@ export default function DefectsPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+
+  const [returnTarget, setReturnTarget] = useState(null);
+  const [returnValue, setReturnValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   const refresh = async () => {
     const [p, c, v, d] = await Promise.all([
@@ -170,13 +177,75 @@ export default function DefectsPage() {
     }
   };
 
+  // ---- Update Return: a lightweight quick-action separate from the full
+  // Edit modal, just to log/correct Total Returned Qty for a defect record.
+  const openReturn = (d) => {
+    setReturnTarget(d);
+    setReturnValue(d.returnedQty ?? "");
+  };
+
+  const submitReturn = async (e) => {
+    e.preventDefault();
+    if (!returnTarget) return;
+    const returnedQty = num(returnValue);
+    try {
+      await apiUpdate("defectRecords", returnTarget.id, { returnedQty }, currentUser);
+      const diff = balanceDiff(returnTarget.totalQty, returnedQty, returnTarget.majorQty, returnTarget.minorQty);
+      showToast(diff === 0 ? "Return diupdate" : `Return diupdate (selisih ${diff} - perbaiki input lain jika perlu)`);
+      setReturnTarget(null);
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ---- Delete (per row + bulk) ----
+  const confirmDeleteOne = async () => {
+    if (!deleteTarget) return;
+    try {
+      await apiDelete("defectRecords", deleteTarget.id, currentUser);
+      showToast("Defect dihapus");
+      setDeleteTarget(null);
+      setSelectedIds((ids) => ids.filter((id) => id !== deleteTarget.id));
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const toggleSelect = (id) => {
+    setSelectedIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  };
+  const toggleSelectAll = () => {
+    setSelectedIds((ids) => (ids.length === defects.length ? [] : defects.map((d) => d.id)));
+  };
+
+  const confirmBulkDelete = async () => {
+    try {
+      await Promise.all(selectedIds.map((id) => apiDelete("defectRecords", id, currentUser)));
+      showToast(`${selectedIds.length} defect dihapus`);
+      setSelectedIds([]);
+      setBulkDeleteOpen(false);
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div className="text-lg font-semibold">Defect Qty</div>
-        <button className="btn-primary" onClick={openAdd}>
-          + Defect
-        </button>
+        <div className="flex items-center gap-2">
+          {selectedIds.length > 0 && (
+            <button className="text-xs text-red-600 hover:underline px-2" onClick={() => setBulkDeleteOpen(true)}>
+              Delete Selected ({selectedIds.length})
+            </button>
+          )}
+          <button className="btn-primary" onClick={openAdd}>
+            + Defect
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
@@ -209,6 +278,13 @@ export default function DefectsPage() {
           <table className="w-full text-sm table-wide">
             <thead className="bg-gray-50 text-left text-gray-500">
               <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    checked={defects.length > 0 && selectedIds.length === defects.length}
+                    onChange={toggleSelectAll}
+                  />
+                </th>
                 <th>Date</th>
                 <th>Product</th>
                 <th>Batch</th>
@@ -227,6 +303,9 @@ export default function DefectsPage() {
                 const diff = balanceDiff(d.totalQty, d.returnedQty, d.majorQty, d.minorQty);
                 return (
                   <tr key={d.id} className="border-t border-gray-100">
+                    <td>
+                      <input type="checkbox" checked={selectedIds.includes(d.id)} onChange={() => toggleSelect(d.id)} />
+                    </td>
                     <td className="whitespace-nowrap">{d.wipDate}</td>
                     <td className="font-medium">{d.articleName}</td>
                     <td>{d.batchLabel}</td>
@@ -248,6 +327,12 @@ export default function DefectsPage() {
                     <td className="whitespace-nowrap">
                       <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => openEdit(d)}>
                         Edit
+                      </button>
+                      <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => openReturn(d)}>
+                        Update Return
+                      </button>
+                      <button className="text-xs text-gray-400 hover:text-red-600 px-1.5 py-1" onClick={() => setDeleteTarget(d)}>
+                        Delete
                       </button>
                     </td>
                   </tr>
@@ -332,6 +417,41 @@ export default function DefectsPage() {
           </button>
         </form>
       </Modal>
+
+      <Modal open={!!returnTarget} onClose={() => setReturnTarget(null)} title="Update Return">
+        <form onSubmit={submitReturn} className="flex flex-col gap-3">
+          <div className="text-sm text-gray-500">
+            {returnTarget?.articleName} · Batch {returnTarget?.batchLabel}
+          </div>
+          <div>
+            <label className="label">Total Returned Qty</label>
+            <input type="number" className="input" value={returnValue} onChange={(e) => setReturnValue(e.target.value)} />
+          </div>
+          <button type="submit" className="btn-primary mt-2">
+            Simpan
+          </button>
+        </form>
+      </Modal>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDeleteOne}
+        title="Hapus Defect"
+        message={`Yakin ingin menghapus defect "${deleteTarget?.articleName}" (Batch ${deleteTarget?.batchLabel})? Data akan hilang permanen.`}
+        confirmLabel="Hapus"
+        danger
+      />
+
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={confirmBulkDelete}
+        title="Hapus Defect Terpilih"
+        message={`Yakin ingin menghapus ${selectedIds.length} defect yang dipilih? Data akan hilang permanen.`}
+        confirmLabel="Hapus"
+        danger
+      />
     </div>
   );
 }

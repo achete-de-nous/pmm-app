@@ -173,34 +173,130 @@ export function sumFinanceMaterials(materials) {
   return (materials || []).reduce((s, m) => s + num(m.totalPayment), 0);
 }
 
-// Resolves live amounts for DP + every termin (in order), plus the totals
-// derived from them. Percent-based amounts always recompute from the current
-// Total Harga Bahan Utama. "remaining" only drops once a DP/termin is marked
-// Paid - a Pending entry is just a plan, not money received yet.
-export function computeFinanceTotals(record) {
-  const total = num(record.totalHargaBahanUtama);
-  const dp = record.dp || { mode: "10%", amount: 0, status: "Pending" };
+// ---------- Finance (REVISI 3) ----------
+// Payment tracking is now PER MATERIAL/CATEGORY, not one lump sum for the
+// whole production. Materials are grouped by their Fabric Category (the
+// same category configured per Material in Materials/COGS - e.g. Kain,
+// Furing, Kancing...), plus a dedicated "Jahit" category for the sewing
+// service cost (hargaJahit). Each category gets its own Total Cost, DP,
+// Payment Term installments, Planned/Actual Payment Date and Payment
+// Status - fully independent from every other category on the same
+// production (point A/B of REVISI 3).
+const emptyDp = () => ({ mode: "10%", amount: 0, plannedDate: "", actualDate: "", status: "Pending", proof: "" });
+
+// Builds the Material Cost breakdown for a resolved COGS record x qty,
+// grouped into payment categories. `existingCategories` (if given) carries
+// over each category's own dp/payments/status when costs are refreshed
+// (e.g. after a COGS reprice), matched by category name - so editing a
+// production's COGS never wipes out payments already recorded.
+export function buildFinanceCategories(cogs, qty, existingCategories = []) {
+  const materials = buildFinanceMaterials(cogs, qty).map((m, i) => ({
+    ...m,
+    category: cogs?.materials?.[i]?.fabricCategory || "Lainnya",
+  }));
+
+  const groups = {};
+  const order = [];
+  for (const m of materials) {
+    const cat = m.category || "Lainnya";
+    if (!groups[cat]) {
+      groups[cat] = { category: cat, materials: [], totalCost: 0 };
+      order.push(cat);
+    }
+    groups[cat].materials.push(m);
+    groups[cat].totalCost += num(m.totalPayment);
+  }
+
+  const hargaJahit = num(cogs?.hargaJahit);
+  if (hargaJahit > 0) {
+    groups["Jahit"] = { category: "Jahit", materials: [], totalCost: hargaJahit, isService: true };
+    order.push("Jahit");
+  }
+
+  const existingByName = Object.fromEntries((existingCategories || []).map((c) => [c.category, c]));
+  return order.map((cat) => {
+    const g = groups[cat];
+    const prev = existingByName[cat];
+    return {
+      ...g,
+      dp: prev?.dp || emptyDp(),
+      payments: prev?.payments || [],
+    };
+  });
+}
+
+// Resolves live amounts for one category's DP + every termin (in order).
+// Percent-based amounts always recompute from that category's own Total
+// Cost. "remaining" only drops once a DP/termin is marked Paid. Status is
+// derived (never stored/chosen directly): Paid once fully covered, DP Paid
+// once the DP is marked Paid but the category isn't fully covered yet,
+// otherwise Pending.
+export function computeFinanceCategoryTotals(cat) {
+  const total = num(cat.totalCost);
+  const dp = cat.dp || emptyDp();
   const dpAmount = computeDpAmount(dp, total);
   let priorRecorded = dpAmount;
-  const payments = (record.payments || []).map((p) => {
+  const payments = (cat.payments || []).map((p) => {
     const amount = computePaymentAmount(p, total, priorRecorded);
     priorRecorded += amount;
     return { ...p, amount };
   });
-  const totalRecorded = dpAmount + payments.reduce((s, p) => s + num(p.amount), 0);
   const totalPaid =
     (dp.status === "Paid" ? dpAmount : 0) + payments.reduce((s, p) => s + (p.status === "Paid" ? num(p.amount) : 0), 0);
   const remaining = Math.max(0, total - totalPaid);
+  let status = "Pending";
+  if (total <= 0 || remaining <= 0) status = "Paid";
+  else if (dp.status === "Paid") status = "DP Paid";
+  return { ...cat, total, dp: { ...dp, amount: dpAmount }, dpAmount, payments, totalPaid, remaining, status };
+}
+
+// Rolls every category up into the production-level totals. Finance DONE
+// (point D) requires EVERY category that actually has a cost to be fully
+// Paid - a single category still at "DP Paid" or "Pending" keeps the whole
+// production at "Pending", even if every other category is Paid.
+export function computeFinanceTotals(record) {
+  const categories = (record.categories || []).map(computeFinanceCategoryTotals);
+  const total = categories.reduce((s, c) => s + c.total, 0);
+  const totalPaid = categories.reduce((s, c) => s + c.totalPaid, 0);
+  const remaining = categories.reduce((s, c) => s + c.remaining, 0);
+  const costed = categories.filter((c) => c.total > 0);
+  const allPaid = costed.length > 0 && costed.every((c) => c.status === "Paid");
   return {
+    categories,
     total,
-    dp: { ...dp, amount: dpAmount },
-    dpAmount,
-    payments,
-    totalRecorded,
     totalPaid,
     remaining,
-    financeProgress: total > 0 && remaining <= 0 ? "Done" : "Pending",
+    financeProgress: allPaid ? "Done" : "Pending",
   };
+}
+
+// Flattens every DP/termin entry across every category of every record into
+// one list, tagged with its own plannedDate/actualDate/status/amount/record
+// - used to build the "Pending Payment by Month" dashboard (point F): bucket
+// by the MONTH OF plannedDate for entries still Pending, and separately by
+// the month of actualDate for entries already Paid (actual cashflow).
+export function flattenFinanceEntries(records) {
+  const out = [];
+  for (const record of records) {
+    const { categories } = computeFinanceTotals(record);
+    for (const cat of categories) {
+      const rows = [
+        { ...cat.dp, amount: cat.dpAmount, label: "DP", kind: "dp" },
+        ...cat.payments.map((p, i) => ({ ...p, label: `Termin ${i + 1}`, kind: "termin" })),
+      ];
+      for (const row of rows) {
+        if (num(row.amount) <= 0) continue;
+        out.push({
+          recordId: record.id,
+          articleName: record.articleName,
+          batchLabel: record.batchLabel,
+          category: cat.category,
+          ...row,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 // ---------- Trial Balance ledger ----------
