@@ -30,7 +30,10 @@ export async function GET(req) {
     listRecords("financeRecords"),
   ]);
 
-  const referencedPlanIds = new Set([...defects.map((d) => d.planId), ...finance.map((f) => f.batchId)]);
+  const referencedPlanIds = new Set([
+    ...defects.map((d) => d.planId),
+    ...finance.map((f) => f.planId || f.batchId),
+  ]);
 
   let deleted = 0;
   for (const p of plans) {

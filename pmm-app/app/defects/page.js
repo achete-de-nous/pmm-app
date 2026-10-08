@@ -5,6 +5,7 @@ import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
 import EmptyState from "@/components/EmptyState";
+import SearchableSelect from "@/components/SearchableSelect";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const num = (v) => Number(v) || 0;
@@ -18,6 +19,11 @@ function resolveCogs(vendorId, productName, plannedQty, cogsRecords) {
   const sorted = candidates.slice().sort((a, b) => num(a.moq) - num(b.moq));
   const fitting = sorted.filter((c) => num(c.moq) <= qty);
   return fitting.length > 0 ? fitting[fitting.length - 1] : sorted[0];
+}
+
+function monthKey(dateStr) {
+  if (!dateStr) return "";
+  return String(dateStr).slice(0, 7);
 }
 
 const emptyForm = { wipDate: "", planId: "", majorQty: "", minorQty: "" };
@@ -57,13 +63,26 @@ export default function DefectsPage() {
   const vendorName = (id) => vendors.find((v) => v.id === id)?.name || "-";
 
   const wipDateOptions = useMemo(() => Array.from(new Set(plans.map((p) => p.wipDate).filter(Boolean))).sort(), [plans]);
-  const plansForDate = useMemo(() => plans.filter((p) => p.wipDate === form.wipDate), [plans, form.wipDate]);
+
+  // Production Reference: "Batch - Product Name - Vendor", sourced from
+  // Production and auto-filtered to the same month as the selected Date.
+  const productionRefOptions = useMemo(() => {
+    const month = monthKey(form.wipDate);
+    const list = month ? plans.filter((p) => monthKey(p.wipDate) === month) : plans;
+    return list.map((p) => ({
+      value: p.id,
+      label: `${p.batch || "-"} - ${p.articleName} - ${vendorName(p.vendorId)}`,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plans, vendors, form.wipDate]);
+
   const selectedPlan = plans.find((p) => p.id === form.planId);
   const selectedCogs = selectedPlan
-    ? resolveCogs(selectedPlan.vendorId, selectedPlan.articleName, selectedPlan.plannedQty, cogsRecords)
+    ? resolveCogs(selectedPlan.vendorId, selectedPlan.productNameNoVariant || selectedPlan.articleName, selectedPlan.plannedQty, cogsRecords)
     : null;
   const cogsPerUnit = selectedCogs?.totalCOGS || 0;
-  const previewCost = (num(form.majorQty) + num(form.minorQty)) * cogsPerUnit;
+  const totalQtyPreview = num(form.majorQty) + num(form.minorQty);
+  const previewCost = totalQtyPreview * cogsPerUnit;
 
   const totals = useMemo(() => {
     return defects.reduce(
@@ -94,14 +113,15 @@ export default function DefectsPage() {
   const submit = async (e) => {
     e.preventDefault();
     if (!form.planId || (form.majorQty === "" && form.minorQty === "")) {
-      showToast("Date, Batch, dan Qty wajib diisi", "error");
+      showToast("Date, Production Reference, dan Qty wajib diisi", "error");
       return;
     }
     const plan = plans.find((p) => p.id === form.planId);
-    const cogs = resolveCogs(plan.vendorId, plan.articleName, plan.plannedQty, cogsRecords);
+    const cogs = resolveCogs(plan.vendorId, plan.productNameNoVariant || plan.articleName, plan.plannedQty, cogsRecords);
     const cogsPerUnitNow = cogs?.totalCOGS || 0;
     const majorQty = num(form.majorQty);
     const minorQty = num(form.minorQty);
+    const totalQty = majorQty + minorQty;
     const payload = {
       wipDate: form.wipDate,
       planId: plan.id,
@@ -112,7 +132,8 @@ export default function DefectsPage() {
       cogsPerUnit: cogsPerUnitNow,
       majorQty,
       minorQty,
-      cost: (majorQty + minorQty) * cogsPerUnitNow,
+      totalQty,
+      cost: totalQty * cogsPerUnitNow,
     };
     try {
       if (editing) {
@@ -189,35 +210,50 @@ export default function DefectsPage() {
       {defects.length === 0 ? (
         <EmptyState title="Belum ada defect tercatat." />
       ) : (
-        <div className="flex flex-col gap-2">
-          {defects.map((d) => (
-            <div key={d.id} className="card flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <div className="font-medium">
-                  {d.articleName} · Batch {d.batchLabel}
-                </div>
-                <div className="text-xs text-gray-500">
-                  {d.wipDate} · {d.vendorName} · Major {d.majorQty} / Minor {d.minorQty} / Returned {d.returnedQty}
-                </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="text-right">
-                  <div className="text-xs text-gray-500">Cost</div>
-                  <div className="font-semibold">{idr(d.cost)}</div>
-                </div>
-                <button className="btn-secondary text-xs" onClick={() => openEdit(d)}>
-                  Edit
-                </button>
-                <button className="btn-secondary text-xs" onClick={() => openReturn(d)}>
-                  Update Return
-                </button>
-              </div>
-            </div>
-          ))}
+        <div className="overflow-x-auto card p-0">
+          <table className="w-full text-sm table-wide">
+            <thead className="bg-gray-50 text-left text-gray-500">
+              <tr>
+                <th>Date</th>
+                <th>Product</th>
+                <th>Batch</th>
+                <th>Vendor</th>
+                <th className="text-right">Total Qty</th>
+                <th className="text-right">Major</th>
+                <th className="text-right">Minor</th>
+                <th className="text-right">Total Returned Qty</th>
+                <th className="text-right">Cost</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {defects.map((d) => (
+                <tr key={d.id} className="border-t border-gray-100">
+                  <td className="whitespace-nowrap">{d.wipDate}</td>
+                  <td className="font-medium">{d.articleName}</td>
+                  <td>{d.batchLabel}</td>
+                  <td>{d.vendorName}</td>
+                  <td className="text-right">{d.totalQty ?? num(d.majorQty) + num(d.minorQty)}</td>
+                  <td className="text-right">{d.majorQty}</td>
+                  <td className="text-right">{d.minorQty}</td>
+                  <td className="text-right">{d.returnedQty}</td>
+                  <td className="text-right font-semibold whitespace-nowrap">{idr(d.cost)}</td>
+                  <td className="whitespace-nowrap">
+                    <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => openEdit(d)}>
+                      Edit
+                    </button>
+                    <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => openReturn(d)}>
+                      Update Return
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title={editing ? "Edit Defect" : "Add Defect"}>
+      <Modal open={addOpen} onClose={() => setAddOpen(false)} title={editing ? "Edit Defect" : "Add Defect"} wide>
         <form onSubmit={submit} className="flex flex-col gap-3">
           <div>
             <label className="label">Date (WIP Date)</label>
@@ -234,19 +270,20 @@ export default function DefectsPage() {
               ))}
             </select>
           </div>
-          {form.wipDate && (
-            <div>
-              <label className="label">Batch</label>
-              <select className="input" value={form.planId} onChange={(e) => setForm({ ...form, planId: e.target.value })}>
-                <option value="">Pilih batch</option>
-                {plansForDate.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.articleName} · Batch {p.batch}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          <div>
+            <label className="label">Production Reference (Batch - Product - Vendor)</label>
+            <SearchableSelect
+              value={form.planId}
+              onChange={(v) => setForm({ ...form, planId: v })}
+              options={productionRefOptions}
+              placeholder={form.wipDate ? "Pilih production reference" : "Pilih Date dulu untuk mempersempit pilihan"}
+            />
+            {!form.wipDate && (
+              <div className="text-xs text-gray-400 mt-1">
+                Tanpa Date dipilih, semua production reference ditampilkan. Pilih Date untuk otomatis filter ke bulan yang sama.
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Qty Major</label>
@@ -257,9 +294,13 @@ export default function DefectsPage() {
               <input type="number" className="input" value={form.minorQty} onChange={(e) => setForm({ ...form, minorQty: e.target.value })} />
             </div>
           </div>
+          <div className="bg-gray-50 rounded-lg px-3 py-2 flex items-center justify-between text-sm">
+            <span className="text-gray-500">Total Qty (Major + Minor)</span>
+            <span className="font-semibold">{totalQtyPreview}</span>
+          </div>
           {selectedPlan && (
             <div className="bg-gray-50 rounded-lg px-3 py-2 flex items-center justify-between text-sm">
-              <span className="text-gray-500">Cost (COGS {idr(cogsPerUnit)} × Qty)</span>
+              <span className="text-gray-500">Cost (COGS {idr(cogsPerUnit)} × Total Qty)</span>
               <span className="font-semibold">{idr(previewCost)}</span>
             </div>
           )}
@@ -271,9 +312,12 @@ export default function DefectsPage() {
 
       <Modal open={!!returnTarget} onClose={() => setReturnTarget(null)} title={`Update Return - ${returnTarget?.articleName || ""}`}>
         <form onSubmit={submitReturn} className="flex flex-col gap-3">
-          <div className="text-xs text-gray-500">Total Major + Minor + Success harus sama dengan Qty yang direturn.</div>
+          <div className="text-xs text-gray-500">
+            Total Major + Minor + Success harus sama dengan Qty yang direturn pada update ini. Major/Minor/Total Returned Qty
+            terakumulasi dari seluruh history return.
+          </div>
           <div>
-            <label className="label">Qty yang direturn</label>
+            <label className="label">Qty yang direturn (update ini)</label>
             <input type="number" className="input" value={returnForm.qty} onChange={(e) => setReturnForm({ ...returnForm, qty: e.target.value })} />
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -290,6 +334,12 @@ export default function DefectsPage() {
               <input type="number" className="input" value={returnForm.success} onChange={(e) => setReturnForm({ ...returnForm, success: e.target.value })} />
             </div>
           </div>
+          {returnTarget && (
+            <div className="text-xs text-gray-400">
+              Total Returned Qty saat ini: {returnTarget.returnedQty || 0} → akan menjadi{" "}
+              {(returnTarget.returnedQty || 0) + (Number(returnForm.qty) || 0)} setelah disimpan.
+            </div>
+          )}
           <button type="submit" className="btn-primary mt-2">
             Simpan
           </button>

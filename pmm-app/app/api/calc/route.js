@@ -21,7 +21,7 @@ export async function GET(req) {
     case "vendor-balances":
       return NextResponse.json({ data: await computeVendorBalances(vendorId) });
     case "trial-balance":
-      return NextResponse.json({ data: await computeTrialBalance(materialName) });
+      return NextResponse.json({ data: await computeTrialBalance(materialName, vendorId) });
     case "dashboard":
     default:
       return NextResponse.json({ data: await computeDashboard() });

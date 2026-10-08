@@ -34,3 +34,33 @@ body {
 .btn-secondary {
   @apply border border-gray-300 rounded-lg px-4 py-2 text-sm font-medium;
 }
+
+/* Wide data table used across Production / Finance / Trial Balance etc. */
+.table-wide th {
+  @apply px-3 py-2.5 whitespace-nowrap font-medium;
+}
+.table-wide td {
+  @apply px-3 py-2.5;
+}
+.table-sticky thead {
+  @apply sticky top-0 z-10;
+}
+
+.badge {
+  @apply text-xs px-2 py-0.5 rounded-full border border-gray-200 whitespace-nowrap inline-block;
+}
+.badge-amber {
+  @apply text-xs px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-700 whitespace-nowrap inline-block;
+}
+.badge-green {
+  @apply text-xs px-2 py-0.5 rounded-full border border-green-300 bg-green-50 text-green-700 whitespace-nowrap inline-block;
+}
+.badge-red {
+  @apply text-xs px-2 py-0.5 rounded-full border border-red-300 bg-red-50 text-red-700 whitespace-nowrap inline-block;
+}
+.badge-blue {
+  @apply text-xs px-2 py-0.5 rounded-full border border-blue-300 bg-blue-50 text-blue-700 whitespace-nowrap inline-block;
+}
+.badge-gray {
+  @apply text-xs px-2 py-0.5 rounded-full border border-gray-300 bg-gray-100 text-gray-600 whitespace-nowrap inline-block;
+}

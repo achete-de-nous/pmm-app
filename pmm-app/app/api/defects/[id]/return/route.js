@@ -35,12 +35,13 @@ export async function POST(req, { params }) {
   const newMajor = num(record.majorQty) + majorNum;
   const newMinor = num(record.minorQty) + minorNum;
   const newReturned = num(record.returnedQty) + qtyNum;
+  const newTotalQty = newMajor + newMinor;
   const cost = newMajor * num(record.cogsPerUnit) + newMinor * num(record.cogsPerUnit);
 
   const updated = await updateRecord(
     "defectRecords",
     id,
-    { majorQty: newMajor, minorQty: newMinor, returnedQty: newReturned, cost },
+    { majorQty: newMajor, minorQty: newMinor, totalQty: newTotalQty, returnedQty: newReturned, cost },
     user
   );
 

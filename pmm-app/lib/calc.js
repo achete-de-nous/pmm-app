@@ -72,27 +72,108 @@ export function resolveCogsForPlan(vendorId, productName, plannedQty, cogsRecord
 }
 
 // ---------- Production plan status / delay logic ----------
+// New status vocabulary (REVISI): Pending, Confirmed, On Progress, On Hold, Done, Delayed.
+// Pending/Confirmed/On Hold are set manually (workflow steps / manual pause).
+// On Progress/Done are derived automatically from Fulfilled Qty vs Planned Qty.
+// "Delayed" is a derived flag (isDelayed) that can coexist with "Done" - both facts
+// stay visible at once (plan can be DONE *and* Delayed) rather than overwriting status.
+const OLD_STATUS_MAP = {
+  "Partially Fulfilled": "On Progress",
+  Fulfilled: "Done",
+  DONE: "Done",
+};
+
+export function normalizeStatus(status) {
+  if (!status) return "Pending";
+  return OLD_STATUS_MAP[status] || status;
+}
+
 export function computePlanStatus(plan) {
   const planned = num(plan.plannedQty);
   const fulfilled = num(plan.fulfilledQty);
-  let status = plan.status || "Pending";
+  let status = normalizeStatus(plan.status);
 
-  if (fulfilled > 0) {
-    status = fulfilled >= planned && planned > 0 ? "DONE" : "Partially Fulfilled";
+  // On Hold is a manual pause - never auto-overridden by qty progress.
+  if (status !== "On Hold") {
+    if (fulfilled > 0 && planned > 0 && fulfilled < planned) {
+      status = "On Progress";
+    } else if (planned > 0 && fulfilled >= planned) {
+      status = "Done";
+    }
   }
 
-  if (plan.fulfilledDate && plan.readyStockProdDate && plan.fulfilledDate > plan.readyStockProdDate) {
-    status = "Delayed";
-  }
+  const isDelayed = !!(
+    plan.fulfilledDate &&
+    plan.readyStockProdDate &&
+    plan.fulfilledDate > plan.readyStockProdDate
+  );
 
-  return status;
+  return { status, isDelayed };
+}
+
+// ---------- Finance: 4 fixed COGS cost categories ----------
+// Every COGS material line carries a `fabricCategory`. We bucket those into the
+// 4 fixed Finance categories the REVISI spec requires. "Bahan utama" and "Celup"
+// map 1:1 to existing Fabric Categories; everything else material-related falls
+// under "Accessories"; "Jahit" comes from the COGS record's own hargaJahit field
+// (it is not a materials line).
+export const FINANCE_CATEGORY_DEFS = [
+  { key: "bahanUtama", label: "Total Harga Bahan Utama" },
+  { key: "accessories", label: "Total Harga Accessories" },
+  { key: "celup", label: "Total Harga Celup" },
+  { key: "jahit", label: "Total Harga Jahit" },
+];
+
+export function categorizeFabric(fabricCategory) {
+  const c = (fabricCategory || "").toLowerCase();
+  if (c.includes("bahan utama")) return "bahanUtama";
+  if (c.includes("celup")) return "celup";
+  return "accessories";
+}
+
+// Builds the 4-category cost breakdown for a resolved COGS record x qty, with
+// default payment fields - used both when auto-creating a Finance record and
+// to recompute totals if the underlying COGS ever changes.
+export function buildFinanceCategories(cogs, qty) {
+  const totals = { bahanUtama: 0, accessories: 0, celup: 0, jahit: 0 };
+  for (const m of cogs?.materials || []) {
+    const key = categorizeFabric(m.fabricCategory);
+    totals[key] += num(m.total) * num(qty);
+  }
+  totals.jahit = num(cogs?.hargaJahit) * num(qty);
+
+  return FINANCE_CATEGORY_DEFS.map((def) => ({
+    key: def.key,
+    label: def.label,
+    totalCost: totals[def.key],
+    dp: 0,
+    remaining: totals[def.key],
+    plannedPaymentDate: null,
+    actualPaymentDate: null,
+    paymentStatus: "Pending",
+  }));
+}
+
+// A category counts as fully paid either when its Remaining Cost has hit zero
+// (DP covers the full Total Cost) or when it has been manually marked "Paid
+// (Lunas)" - the latter lets a user close out a category even if the DP
+// bookkeeping lags behind the real-world payment.
+export function isCategoryFullyPaid(cat) {
+  return num(cat.remaining) <= 0 || cat.paymentStatus === "Paid";
+}
+
+// A Finance record flips to DONE (and moves out of the ALL view into DONE)
+// once every one of its 4 categories is fully paid.
+export function computeFinanceProgress(categories) {
+  if (!categories || categories.length === 0) return "Pending";
+  return categories.every(isCategoryFullyPaid) ? "Done" : "Pending";
 }
 
 // ---------- Trial Balance ledger ----------
 // Combines Material Transactions (in/out of a vendor) with Production material usage
 // (derived from each plan's resolved COGS x qty) into one running-balance ledger per
 // Material + Location, sorted earliest date first.
-export async function computeTrialBalance(materialNameFilter) {
+export async function computeTrialBalance(materialNameFilter, vendorIdFilter) {
   const [materials, transactions, vendors, plans, cogsRecords] = await Promise.all([
     listRecords("materials"),
     listRecords("materialTransactions"),
@@ -110,33 +191,38 @@ export async function computeTrialBalance(materialNameFilter) {
     if (materialNameFilter && t.materialName !== materialNameFilter) continue;
     const qty = num(t.quantity);
     if (t.source && t.source !== "Supplier") {
-      entries.push({
-        materialName: t.materialName,
-        location: t.source,
-        locationLabel: locLabel(t.source),
-        date: t.deliveryDate || t.date || t.createdAt || "",
-        type: "Transaction",
-        description: `Keluar ke ${locLabel(t.destination)}`,
-        qtyChange: -qty,
-        valueChange: -num(t.materialCost ?? t.cogs),
-      });
+      if (!vendorIdFilter || t.source === vendorIdFilter) {
+        entries.push({
+          materialName: t.materialName,
+          location: t.source,
+          locationLabel: locLabel(t.source),
+          date: t.deliveryDate || t.date || t.createdAt || "",
+          type: "Transaction",
+          description: `Keluar ke ${locLabel(t.destination)}`,
+          qtyChange: -qty,
+          valueChange: -num(t.materialCost ?? t.cogs),
+        });
+      }
     }
     if (t.destination) {
-      entries.push({
-        materialName: t.materialName,
-        location: t.destination,
-        locationLabel: locLabel(t.destination),
-        date: t.deliveryDate || t.date || t.createdAt || "",
-        type: "Transaction",
-        description: `Masuk dari ${t.source === "Supplier" ? "Supplier" : locLabel(t.source)}`,
-        qtyChange: qty,
-        valueChange: num(t.materialCost ?? t.cogs),
-      });
+      if (!vendorIdFilter || t.destination === vendorIdFilter) {
+        entries.push({
+          materialName: t.materialName,
+          location: t.destination,
+          locationLabel: locLabel(t.destination),
+          date: t.deliveryDate || t.date || t.createdAt || "",
+          type: "Transaction",
+          description: `Masuk dari ${t.source === "Supplier" ? "Supplier" : locLabel(t.source)}`,
+          qtyChange: qty,
+          valueChange: num(t.materialCost ?? t.cogs),
+        });
+      }
     }
   }
 
   for (const p of plans) {
-    const cogs = resolveCogsForPlan(p.vendorId, p.articleName, p.plannedQty, cogsRecords);
+    if (vendorIdFilter && p.vendorId !== vendorIdFilter) continue;
+    const cogs = resolveCogsForPlan(p.vendorId, p.productNameNoVariant || p.articleName, p.plannedQty, cogsRecords);
     if (!cogs) continue;
     const qtyUsed = num(p.fulfilledQty) > 0 ? num(p.fulfilledQty) : num(p.plannedQty);
     for (const m of cogs.materials || []) {
@@ -184,12 +270,12 @@ export async function computeDashboard() {
       computeMaterialBalances(),
     ]);
 
-  const activePlans = productionPlans.filter((p) => p.status !== "DONE" && p.status !== "Fulfilled");
+  const activePlans = productionPlans.filter((p) => normalizeStatus(p.status) !== "Done");
   const totalUnfulfilled = productionPlans.reduce((s, p) => s + Math.max(0, num(p.plannedQty) - num(p.fulfilledQty)), 0);
   const warehouseValue = materialBalances.filter((r) => r.location === "Warehouse").reduce((s, r) => s + r.totalValue, 0);
   const vendorValue = materialBalances.filter((r) => r.isVendor).reduce((s, r) => s + r.totalValue, 0);
   const totalDefectQty = defectRecords.reduce((s, d) => s + num(d.majorQty) + num(d.minorQty), 0);
-  const unpaidFinance = financeRecords.filter((f) => !f.paid).length;
+  const unpaidFinance = financeRecords.filter((f) => f.financeProgress !== "Done").length;
 
   return {
     totalMaterials: materials.length,

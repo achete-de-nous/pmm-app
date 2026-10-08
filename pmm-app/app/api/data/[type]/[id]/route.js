@@ -2,6 +2,17 @@ import { NextResponse } from "next/server";
 import { isValidType } from "@/lib/entities";
 import { getRecord, updateRecord, softDeleteRecord } from "@/lib/store";
 
+// Production Plan date fields that must keep a field-level audit trail
+// (old value -> new value, who, when) per the REVISI spec, surfaced via the
+// History drawer on the Production page.
+const PLAN_AUDITED_DATE_FIELDS = {
+  wipDate: "WIP Date",
+  readyStockOpsDate: "Ready Stock (OPS)",
+  readyStockProdDate: "Ready Stock (PROD)",
+  delayDate: "Delay Date (PROD)",
+  fulfilledDate: "Fulfilled Date",
+};
+
 export async function GET(req, { params }) {
   const { type, id } = params;
   if (!isValidType(type)) return NextResponse.json({ error: "Unknown type" }, { status: 404 });
@@ -23,7 +34,31 @@ export async function PATCH(req, { params }) {
     delete patch.pinSalt;
   }
   try {
-    const record = await updateRecord(type, id, patch, user);
+    let finalPatch = patch;
+    if (type === "productionPlans") {
+      const existing = await getRecord(type, id);
+      const newHistoryEntries = [];
+      if (existing) {
+        for (const [field, label] of Object.entries(PLAN_AUDITED_DATE_FIELDS)) {
+          if (!(field in patch)) continue;
+          const oldValue = existing[field] || null;
+          const newValue = patch[field] || null;
+          if (oldValue === newValue) continue;
+          newHistoryEntries.push({
+            field,
+            label,
+            oldValue,
+            newValue,
+            user: user || "Unknown",
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+      if (newHistoryEntries.length > 0) {
+        finalPatch = { ...patch, history: [...(existing.history || []), ...newHistoryEntries] };
+      }
+    }
+    const record = await updateRecord(type, id, finalPatch, user);
     return NextResponse.json({ data: record });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });

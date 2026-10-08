@@ -1,174 +1,146 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
-import { apiList, apiCreate, apiUpdate, apiDelete } from "@/lib/api-client";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { apiList, apiUpdate, apiPost } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
-import Modal from "@/components/Modal";
-import ConfirmDialog from "@/components/ConfirmDialog";
 import EmptyState from "@/components/EmptyState";
+import { computeFinanceProgress, isCategoryFullyPaid } from "@/lib/calc";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const num = (v) => Number(v) || 0;
-const uid = () => Math.random().toString(36).slice(2, 10);
 
-function resolveCogs(vendorId, productName, plannedQty, cogsRecords) {
-  const candidates = cogsRecords.filter(
-    (c) => c.isCurrent && !c.deleted && c.vendorId === vendorId && c.productName === productName
-  );
-  if (candidates.length === 0) return null;
-  const qty = num(plannedQty);
-  const sorted = candidates.slice().sort((a, b) => num(a.moq) - num(b.moq));
-  const fitting = sorted.filter((c) => num(c.moq) <= qty);
-  return fitting.length > 0 ? fitting[fitting.length - 1] : sorted[0];
+const PAYMENT_STATUSES = ["Pending", "DP Paid", "Paid"];
+const PAYMENT_STATUS_LABEL = { Pending: "Pending", "DP Paid": "DP Paid", Paid: "Paid (Lunas)" };
+
+function monthKey(dateStr) {
+  if (!dateStr) return "";
+  return String(dateStr).slice(0, 7);
 }
-
-function buildCostLines(cogs, qty) {
-  if (!cogs) return [];
-  const lines = (cogs.materials || []).map((m) => ({
-    label: m.materialName,
-    unitCost: num(m.total),
-    totalCost: num(m.total) * qty,
-    termins: [],
-  }));
-  lines.push({ label: "Harga Jahit", unitCost: num(cogs.hargaJahit), totalCost: num(cogs.hargaJahit) * qty, termins: [] });
-  return lines;
+function monthLabel(key) {
+  if (!key) return "Belum Dijadwalkan";
+  const [y, m] = key.split("-");
+  const names = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+  ];
+  return `${names[Number(m) - 1] || m} ${y}`;
 }
 
 export default function FinancePage() {
   const { currentUser } = useUser();
   const { showToast } = useToast();
-  const [plans, setPlans] = useState([]);
-  const [cogsRecords, setCogsRecords] = useState([]);
   const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [view, setView] = useState("ALL"); // "ALL" | "DONE"
+  const [expandedId, setExpandedId] = useState(null);
+  const [editState, setEditState] = useState({}); // `${financeId}:${categoryKey}` -> draft fields
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [month, setMonth] = useState("");
-  const [batchId, setBatchId] = useState("");
-  const [costLines, setCostLines] = useState([]);
-  const [deleteTarget, setDeleteTarget] = useState(null);
-  const [paymentTarget, setPaymentTarget] = useState(null);
+  const refresh = async () => setRecords(await apiList("financeRecords"));
 
-  const refresh = async () => {
-    const [p, c, f] = await Promise.all([apiList("productionPlans"), apiList("cogsRecords"), apiList("financeRecords")]);
-    setPlans(p);
-    setCogsRecords(c);
-    setRecords(f);
+  const sync = async (showResult) => {
+    setSyncing(true);
+    try {
+      const result = await apiPost("/api/finance/sync", { user: currentUser });
+      setRecords(result.records);
+      if (showResult && result.created > 0) {
+        showToast(`${result.created} Finance record baru dibuat dari Production Plan yang Confirmed`);
+      }
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setSyncing(false);
+    }
   };
 
   useEffect(() => {
-    refresh();
+    (async () => {
+      setLoading(true);
+      await sync(false);
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selectedPlan = plans.find((p) => p.id === batchId);
+  const viewRecords = useMemo(
+    () => records.filter((r) => (view === "DONE" ? r.financeProgress === "Done" : true)),
+    [records, view]
+  );
 
-  const openAdd = () => {
-    setEditing(null);
-    setMonth("");
-    setBatchId("");
-    setCostLines([]);
-    setAddOpen(true);
-  };
+  const doneCount = records.filter((r) => r.financeProgress === "Done").length;
 
-  const openEdit = (r) => {
-    setEditing(r);
-    setMonth(r.month);
-    setBatchId(r.batchId);
-    setCostLines(r.costLines || []);
-    setAddOpen(true);
-  };
-
-  const onPickBatch = (id) => {
-    setBatchId(id);
-    const plan = plans.find((p) => p.id === id);
-    if (!plan) {
-      setCostLines([]);
-      return;
-    }
-    const cogs = resolveCogs(plan.vendorId, plan.articleName, plan.plannedQty, cogsRecords);
-    setCostLines(buildCostLines(cogs, num(plan.plannedQty)));
-  };
-
-  const addTermin = (lineIdx) => {
-    setCostLines((lines) =>
-      lines.map((l, i) => (i === lineIdx ? { ...l, termins: [...l.termins, { id: uid(), date: "", percent: "", paid: false }] } : l))
-    );
-  };
-  const updateTermin = (lineIdx, terminId, patch) => {
-    setCostLines((lines) =>
-      lines.map((l, i) =>
-        i === lineIdx ? { ...l, termins: l.termins.map((t) => (t.id === terminId ? { ...t, ...patch } : t)) } : l
-      )
-    );
-  };
-  const removeTermin = (lineIdx, terminId) => {
-    setCostLines((lines) =>
-      lines.map((l, i) => (i === lineIdx ? { ...l, termins: l.termins.filter((t) => t.id !== terminId) } : l))
-    );
-  };
-
-  const totalCost = costLines.reduce((s, l) => s + num(l.totalCost), 0);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    const plan = plans.find((p) => p.id === batchId);
-    if (!month || !plan) {
-      showToast("Bulan dan Batch wajib diisi", "error");
-      return;
-    }
-    const payload = {
-      month,
-      batchId: plan.id,
-      batchLabel: plan.batch,
-      articleName: plan.articleName,
-      qty: num(plan.plannedQty),
-      costLines: costLines.map((l) => ({
-        ...l,
-        termins: l.termins.map((t) => ({ ...t, amount: (num(t.percent) / 100) * num(l.totalCost) })),
-      })),
-      totalCost,
-    };
-    try {
-      if (editing) {
-        await apiUpdate("financeRecords", editing.id, payload, currentUser);
-        showToast("Finance diupdate");
-      } else {
-        await apiCreate("financeRecords", { ...payload, paid: false }, currentUser);
-        showToast("Finance disimpan");
+  // ---- Dashboard: overall Remaining Cost + Pending Payment by Month ----
+  const overallRemaining = useMemo(
+    () => records.reduce((s, r) => s + (r.categories || []).reduce((s2, c) => s2 + Math.max(0, num(c.remaining)), 0), 0),
+    [records]
+  );
+  const pendingByMonth = useMemo(() => {
+    const map = {};
+    for (const r of records) {
+      for (const c of r.categories || []) {
+        if (isCategoryFullyPaid(c)) continue;
+        // Mismatch handling: once an Actual Payment Date exists, bucket by
+        // that real month; otherwise forecast using the Planned Payment Date.
+        const key = monthKey(c.actualPaymentDate) || monthKey(c.plannedPaymentDate) || "";
+        if (!map[key]) map[key] = 0;
+        map[key] += Math.max(0, num(c.remaining));
       }
-      setAddOpen(false);
-      refresh();
-    } catch (err) {
-      showToast(err.message, "error");
     }
+    return Object.entries(map)
+      .map(([key, amount]) => ({ key, amount }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }, [records]);
+
+  // ---- Per-category edit ----
+  const editKey = (recordId, catKey) => `${recordId}:${catKey}`;
+
+  const startEdit = (record, cat) => {
+    setEditState((s) => ({
+      ...s,
+      [editKey(record.id, cat.key)]: {
+        dp: cat.dp ?? 0,
+        plannedPaymentDate: cat.plannedPaymentDate || "",
+        actualPaymentDate: cat.actualPaymentDate || "",
+        paymentStatus: cat.paymentStatus || "Pending",
+      },
+    }));
   };
 
-  const confirmDelete = async () => {
-    try {
-      await apiDelete("financeRecords", deleteTarget.id, currentUser);
-      showToast("Finance dihapus");
-      setDeleteTarget(null);
-      refresh();
-    } catch (err) {
-      showToast(err.message, "error");
-    }
+  const updateEdit = (record, cat, patch) => {
+    setEditState((s) => ({ ...s, [editKey(record.id, cat.key)]: { ...s[editKey(record.id, cat.key)], ...patch } }));
   };
 
-  const allTermins = (r) => (r.costLines || []).flatMap((l, li) => l.termins.map((t, ti) => ({ ...t, lineIdx: li, label: l.label })));
-
-  const openPayment = (r) => setPaymentTarget(r);
-
-  const toggleTerminPaid = async (r, lineIdx, terminId) => {
-    const newCostLines = r.costLines.map((l, i) =>
-      i === lineIdx
-        ? { ...l, termins: l.termins.map((t) => (t.id === terminId ? { ...t, paid: !t.paid, paidAt: !t.paid ? new Date().toISOString() : null } : t)) }
-        : l
+  const saveCategory = async (record, cat) => {
+    const draft = editState[editKey(record.id, cat.key)];
+    if (!draft) return;
+    const dp = Math.min(num(draft.dp), num(cat.totalCost));
+    const remaining = num(cat.totalCost) - dp;
+    const newCategories = record.categories.map((c) =>
+      c.key === cat.key
+        ? {
+            ...c,
+            dp,
+            remaining,
+            plannedPaymentDate: draft.plannedPaymentDate || null,
+            actualPaymentDate: draft.actualPaymentDate || null,
+            paymentStatus: draft.paymentStatus,
+          }
+        : c
     );
-    const allPaid = newCostLines.every((l) => l.termins.every((t) => t.paid));
+    const financeProgress = computeFinanceProgress(newCategories);
     try {
-      const updated = await apiUpdate("financeRecords", r.id, { costLines: newCostLines, paid: allPaid }, currentUser);
-      setPaymentTarget(updated);
-      refresh();
+      const updated = await apiUpdate("financeRecords", record.id, { categories: newCategories, financeProgress }, currentUser);
+      setRecords((rs) => rs.map((r) => (r.id === record.id ? updated : r)));
+      showToast(
+        financeProgress === "Done" && record.financeProgress !== "Done"
+          ? `Finance "${record.articleName}" lunas semua kategori - pindah ke tab DONE`
+          : "Payment diupdate"
+      );
+      setEditState((s) => {
+        const copy = { ...s };
+        delete copy[editKey(record.id, cat.key)];
+        return copy;
+      });
     } catch (err) {
       showToast(err.message, "error");
     }
@@ -176,160 +148,218 @@ export default function FinancePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="text-lg font-semibold">Finance</div>
-        <button className="btn-primary" onClick={openAdd}>
-          + Finance
+        <button className="btn-secondary text-xs" onClick={() => sync(true)} disabled={syncing}>
+          {syncing ? "Sync..." : "Sync dari Production (Confirmed)"}
         </button>
       </div>
 
-      {records.length === 0 ? (
-        <EmptyState title="Belum ada data finance." />
-      ) : (
-        <div className="flex flex-col gap-2">
-          {records.map((r) => {
-            const termins = allTermins(r);
-            const paidCount = termins.filter((t) => t.paid).length;
-            return (
-              <div key={r.id} className="card flex items-center justify-between gap-3 flex-wrap">
-                <div>
-                  <div className="font-medium">
-                    {r.articleName} · Batch {r.batchLabel}
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {r.month} · Qty {r.qty} · {paidCount}/{termins.length} termin dibayar
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="text-right">
-                    <div className="text-xs text-gray-500">Total Cost</div>
-                    <div className="font-semibold">{idr(r.totalCost)}</div>
-                  </div>
-                  {r.paid && <span className="text-xs px-2 py-0.5 rounded-full border border-green-300 text-green-700">Paid</span>}
-                  <button className="btn-secondary text-xs" onClick={() => openEdit(r)}>
-                    Edit
-                  </button>
-                  <button className="btn-secondary text-xs" onClick={() => openPayment(r)}>
-                    Update Payment
-                  </button>
-                  <button className="text-xs text-gray-400 hover:text-red-600 px-2" onClick={() => setDeleteTarget(r)}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="card">
+          <div className="label">Remaining Cost (Total COGS - Total Paid)</div>
+          <div className="text-2xl font-semibold">{idr(overallRemaining)}</div>
         </div>
-      )}
-
-      <Modal open={addOpen} onClose={() => setAddOpen(false)} title={editing ? "Edit Finance" : "Add Finance"} wide>
-        <form onSubmit={submit} className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Bulan</label>
-              <input type="month" className="input" value={month} onChange={(e) => setMonth(e.target.value)} />
-            </div>
-            <div>
-              <label className="label">Batch</label>
-              <select className="input" value={batchId} onChange={(e) => onPickBatch(e.target.value)}>
-                <option value="">Pilih batch</option>
-                {plans.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.articleName} · Batch {p.batch}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          {selectedPlan && (
-            <div className="grid grid-cols-2 gap-3 text-sm bg-gray-50 rounded-lg px-3 py-2">
-              <div>
-                <div className="text-xs text-gray-500">Article Name</div>
-                <div className="font-medium">{selectedPlan.articleName}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">Qty</div>
-                <div className="font-medium">{selectedPlan.plannedQty}</div>
-              </div>
-            </div>
-          )}
-
-          {costLines.length > 0 && (
-            <div className="flex flex-col gap-3">
-              <div className="label mb-0">Production Cost</div>
-              {costLines.map((line, li) => (
-                <div key={li} className="border border-gray-200 rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="font-medium text-sm">{line.label}</div>
-                    <div className="text-sm text-gray-500">{idr(line.totalCost)}</div>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    {line.termins.map((t) => (
-                      <div key={t.id} className="flex items-center gap-2">
-                        <input
-                          type="date"
-                          className="input py-1 text-xs"
-                          value={t.date}
-                          onChange={(e) => updateTermin(li, t.id, { date: e.target.value })}
-                        />
-                        <input
-                          type="number"
-                          className="input py-1 text-xs w-24"
-                          placeholder="%"
-                          value={t.percent}
-                          onChange={(e) => updateTermin(li, t.id, { percent: e.target.value })}
-                        />
-                        <span className="text-xs text-gray-500 whitespace-nowrap w-28">
-                          {idr((num(t.percent) / 100) * num(line.totalCost))}
-                        </span>
-                        <button type="button" className="text-xs text-gray-400 hover:text-red-600" onClick={() => removeTermin(li, t.id)}>
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                    <button type="button" className="text-xs text-gray-500 underline self-start" onClick={() => addTermin(li)}>
-                      + Termin
-                    </button>
-                  </div>
+        <div className="card">
+          <div className="label">Pending Payment by Month</div>
+          {pendingByMonth.length === 0 ? (
+            <div className="text-sm text-gray-400 mt-1">Tidak ada pending payment.</div>
+          ) : (
+            <div className="flex flex-col gap-1 mt-1">
+              {pendingByMonth.map((row) => (
+                <div key={row.key || "none"} className="flex items-center justify-between text-sm">
+                  <span className="text-gray-600">{monthLabel(row.key)}</span>
+                  <span className="font-medium">{idr(row.amount)}</span>
                 </div>
               ))}
-              <div className="flex items-center justify-between text-base font-semibold border-t border-gray-100 pt-2">
-                <span>Total Cost</span>
-                <span>{idr(totalCost)}</span>
-              </div>
             </div>
           )}
-
-          <button type="submit" className="btn-primary mt-2">
-            Save
-          </button>
-        </form>
-      </Modal>
-
-      <Modal open={!!paymentTarget} onClose={() => setPaymentTarget(null)} title="Update Payment">
-        <div className="flex flex-col gap-2">
-          {paymentTarget &&
-            allTermins(paymentTarget).map((t) => (
-              <label key={t.id} className="flex items-center gap-2 border border-gray-100 rounded-lg px-3 py-2 text-sm">
-                <input type="checkbox" checked={!!t.paid} onChange={() => toggleTerminPaid(paymentTarget, t.lineIdx, t.id)} />
-                <span className="flex-1">
-                  {t.label} · {t.date || "-"} · {t.percent}%
-                </span>
-                <span className="font-medium">{idr((num(t.percent) / 100) * num(paymentTarget.costLines[t.lineIdx].totalCost))}</span>
-              </label>
-            ))}
         </div>
-      </Modal>
+      </div>
 
-      <ConfirmDialog
-        open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={confirmDelete}
-        title="Hapus Finance"
-        message={`Yakin ingin menghapus data finance "${deleteTarget?.articleName}" batch ${deleteTarget?.batchLabel}?`}
-        confirmLabel="Hapus"
-        danger
-      />
+      <div className="flex gap-2">
+        {["ALL", "DONE"].map((v) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            className={`text-sm px-3 py-1.5 rounded-full border ${
+              view === v ? "bg-ink text-white border-ink" : "border-gray-200 text-gray-600"
+            }`}
+          >
+            {v === "ALL" ? `All (${records.length})` : `Done (${doneCount})`}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-400">Memuat...</div>
+      ) : viewRecords.length === 0 ? (
+        <EmptyState
+          title={
+            view === "DONE"
+              ? "Belum ada Finance yang lunas semua kategori."
+              : "Belum ada Finance. Finance otomatis muncul dari Production Plan berstatus Confirmed yang sudah punya COGS."
+          }
+        />
+      ) : (
+        <div className="overflow-x-auto card p-0">
+          <table className="w-full text-sm table-wide">
+            <thead className="bg-gray-50 text-left text-gray-500">
+              <tr>
+                <th></th>
+                <th>WIP Date</th>
+                <th>Ready OPS</th>
+                <th>Ready PROD</th>
+                <th>Delayed PROD</th>
+                <th>Vendor Sewing</th>
+                <th>Product Name</th>
+                <th className="text-right">COGS</th>
+                <th>Finance Progress</th>
+              </tr>
+            </thead>
+            <tbody>
+              {viewRecords.map((r) => {
+                const isOpen = expandedId === r.id;
+                return (
+                  <Fragment key={r.id}>
+                    <tr
+                      className="border-t border-gray-100 cursor-pointer hover:bg-gray-50"
+                      onClick={() => setExpandedId(isOpen ? null : r.id)}
+                    >
+                      <td className="px-3 py-2.5 text-gray-400 text-xs">{isOpen ? "▲" : "▼"}</td>
+                      <td className="whitespace-nowrap">{r.wipDate || "-"}</td>
+                      <td className="whitespace-nowrap">{r.readyStockOpsDate || "-"}</td>
+                      <td className="whitespace-nowrap">{r.readyStockProdDate || "-"}</td>
+                      <td className="whitespace-nowrap text-red-600">{r.delayDateProd || "-"}</td>
+                      <td>{r.vendorName}</td>
+                      <td className="font-medium min-w-[180px]">
+                        {r.articleName} <span className="text-gray-400">· Batch {r.batchLabel}</span>
+                      </td>
+                      <td className="text-right whitespace-nowrap">{idr(r.totalCOGS)}</td>
+                      <td>
+                        <span className={r.financeProgress === "Done" ? "badge-green" : "badge-amber"}>
+                          {r.financeProgress === "Done" ? "Done" : "Pending"}
+                        </span>
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="border-t border-gray-100 bg-gray-50/60">
+                        <td colSpan={9} className="px-4 py-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                            {(r.categories || []).map((cat) => {
+                              const draft = editState[editKey(r.id, cat.key)];
+                              const isEditing = !!draft;
+                              return (
+                                <div key={cat.key} className="border border-gray-200 rounded-lg p-3 bg-white">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <div className="font-medium text-sm">{cat.label}</div>
+                                    {isCategoryFullyPaid(cat) && <span className="badge-green">Lunas</span>}
+                                  </div>
+                                  <div className="text-xs text-gray-500 flex justify-between">
+                                    <span>Total Cost</span>
+                                    <span className="font-medium text-ink">{idr(cat.totalCost)}</span>
+                                  </div>
+
+                                  {isEditing ? (
+                                    <div className="flex flex-col gap-2 mt-2">
+                                      <div>
+                                        <label className="label">DP</label>
+                                        <input
+                                          type="number"
+                                          className="input py-1 text-xs"
+                                          value={draft.dp}
+                                          onChange={(e) => updateEdit(r, cat, { dp: e.target.value })}
+                                        />
+                                      </div>
+                                      <div className="text-xs text-gray-500 flex justify-between">
+                                        <span>Remaining</span>
+                                        <span className="font-medium">{idr(Math.max(0, num(cat.totalCost) - num(draft.dp)))}</span>
+                                      </div>
+                                      <div>
+                                        <label className="label">Planned Payment Date</label>
+                                        <input
+                                          type="date"
+                                          className="input py-1 text-xs"
+                                          value={draft.plannedPaymentDate}
+                                          onChange={(e) => updateEdit(r, cat, { plannedPaymentDate: e.target.value })}
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="label">Actual Payment Date</label>
+                                        <input
+                                          type="date"
+                                          className="input py-1 text-xs"
+                                          value={draft.actualPaymentDate}
+                                          onChange={(e) => updateEdit(r, cat, { actualPaymentDate: e.target.value })}
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="label">Payment Status</label>
+                                        <select
+                                          className="input py-1 text-xs"
+                                          value={draft.paymentStatus}
+                                          onChange={(e) => updateEdit(r, cat, { paymentStatus: e.target.value })}
+                                        >
+                                          {PAYMENT_STATUSES.map((s) => (
+                                            <option key={s} value={s}>
+                                              {PAYMENT_STATUS_LABEL[s]}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="btn-primary text-xs py-1.5 mt-1"
+                                        onClick={() => saveCategory(r, cat)}
+                                      >
+                                        Simpan
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex flex-col gap-1 mt-2 text-xs text-gray-600">
+                                      <div className="flex justify-between">
+                                        <span>DP</span>
+                                        <span>{idr(cat.dp)}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Remaining</span>
+                                        <span className="font-medium text-ink">{idr(cat.remaining)}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Planned</span>
+                                        <span>{cat.plannedPaymentDate || "-"}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Actual</span>
+                                        <span>{cat.actualPaymentDate || "-"}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span>Status</span>
+                                        <span>{PAYMENT_STATUS_LABEL[cat.paymentStatus] || cat.paymentStatus}</span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="btn-secondary text-xs py-1 mt-1"
+                                        onClick={() => startEdit(r, cat)}
+                                      >
+                                        Update Payment
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

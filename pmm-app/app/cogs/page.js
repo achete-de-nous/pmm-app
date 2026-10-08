@@ -6,6 +6,7 @@ import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import EmptyState from "@/components/EmptyState";
+import SearchableSelect from "@/components/SearchableSelect";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const num = (v) => Number(v) || 0;
@@ -458,14 +459,12 @@ export default function CogsPage() {
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="label">Nama Bahan</label>
-                      <select className="input" value={row.materialName} onChange={(e) => selectMaterial(idx, e.target.value)}>
-                        <option value="">Pilih material</option>
-                        {materials.map((m) => (
-                          <option key={m.id} value={m.name}>
-                            {m.name}
-                          </option>
-                        ))}
-                      </select>
+                      <SearchableSelect
+                        value={row.materialName}
+                        onChange={(v) => selectMaterial(idx, v)}
+                        options={materials.map((m) => ({ value: m.name, label: m.name }))}
+                        placeholder="Pilih material"
+                      />
                     </div>
                     <div>
                       <label className="label">Fabric Category</label>

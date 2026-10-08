@@ -9,10 +9,16 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import EmptyState from "@/components/EmptyState";
 import SearchableSelect from "@/components/SearchableSelect";
 import { downloadProductionTemplate, parseProductionFile, classifyProductionRows } from "@/lib/productionImport";
+import { computePlanStatus } from "@/lib/calc";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const num = (v) => Number(v) || 0;
-const STATUSES = ["Pending", "Confirmed", "Partially Fulfilled", "Fulfilled", "Delayed", "DONE"];
+// REVISI: Production Progress vocabulary. Pending/Confirmed/On Hold are set
+// manually (workflow steps + manual pause); On Progress/Done are derived from
+// Fulfilled Qty vs Planned Qty; Delayed is a derived flag (isDelayed) that can
+// stack on top of any of the above (e.g. "Done" + "Delayed" shown together).
+const STATUSES = ["Pending", "Confirmed", "On Progress", "On Hold", "Done"];
+const FILTER_CHIPS = ["Pending", "Confirmed", "On Progress", "On Hold", "Done", "Delayed"];
 const RETENTION_MONTHS = 3;
 const WARN_DAYS = 7;
 
@@ -22,6 +28,7 @@ const emptyForm = {
   wipDate: "",
   readyStockOpsDate: "",
   readyStockProdDate: "",
+  delayDate: "",
   vendorId: "",
   plannedQty: "",
   note: "",
@@ -50,17 +57,34 @@ function monthLabel(key) {
   return `${names[Number(m) - 1] || m} ${y}`;
 }
 
+function fmtDateTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString("id-ID");
+}
+
 // Resolves the current, non-deleted COGS record for a vendor+product combo,
-// tiered by MOQ (the highest MOQ that is <= plannedQty).
-function resolveCogs(vendorId, productName, plannedQty, cogsRecords) {
+// tiered by MOQ (the highest MOQ that is <= plannedQty). COGS is keyed by the
+// Product's "no variant" family name, so callers must pass that - not the
+// full (with-variant) Product Name shown on screen.
+function resolveCogs(vendorId, productNameNoVariant, plannedQty, cogsRecords) {
   const candidates = cogsRecords.filter(
-    (c) => c.isCurrent && !c.deleted && c.vendorId === vendorId && c.productName === productName
+    (c) => c.isCurrent && !c.deleted && c.vendorId === vendorId && c.productName === productNameNoVariant
   );
   if (candidates.length === 0) return null;
   const qty = num(plannedQty);
   const sorted = candidates.slice().sort((a, b) => num(a.moq) - num(b.moq));
   const fitting = sorted.filter((c) => num(c.moq) <= qty);
   return fitting.length > 0 ? fitting[fitting.length - 1] : sorted[0];
+}
+
+function statusBadgeClass(status) {
+  if (status === "Done") return "badge-green";
+  if (status === "On Progress") return "badge-blue";
+  if (status === "On Hold") return "badge-gray";
+  if (status === "Confirmed") return "badge-blue";
+  return "badge";
 }
 
 export default function ProductionPage() {
@@ -85,6 +109,8 @@ export default function ProductionPage() {
 
   const [fulfillOpen, setFulfillOpen] = useState(null);
   const [fulfillQty, setFulfillQty] = useState("");
+
+  const [historyTarget, setHistoryTarget] = useState(null);
 
   const [importOpen, setImportOpen] = useState(false);
   const [importRows, setImportRows] = useState([]);
@@ -112,19 +138,33 @@ export default function ProductionPage() {
   const sewingVendors = useMemo(() => vendors.filter((v) => (v.vendorType || "").toLowerCase() === "sewing"), [vendors]);
   const vendorName = (id) => vendors.find((v) => v.id === id)?.name || "-";
 
+  // Product field (Article Name) now sources the full Product Name (with
+  // variant) directly from the Product tab, per REVISI spec - not the
+  // "no variant" family name used internally for COGS matching.
   const articleOptions = useMemo(() => {
-    const set = new Set(products.map((p) => p.productNameNoVariant).filter(Boolean));
-    return Array.from(set).map((n) => ({ value: n, label: n }));
+    const seen = new Set();
+    const opts = [];
+    for (const p of products) {
+      if (!p.productName || seen.has(p.productName)) continue;
+      seen.add(p.productName);
+      opts.push({ value: p.productName, label: p.productName });
+    }
+    return opts;
   }, [products]);
 
-  const priceForArticle = (articleName) => products.find((p) => p.productNameNoVariant === articleName)?.price || 0;
+  const productByFullName = (name) => products.find((p) => p.productName === name);
+  const priceForArticle = (articleName) => productByFullName(articleName)?.price || 0;
+  const noVariantForArticle = (articleName) => productByFullName(articleName)?.productNameNoVariant || articleName;
 
   const enrichedPlans = useMemo(() => {
     return plans.map((p) => {
-      const cogs = resolveCogs(p.vendorId, p.articleName, p.plannedQty, cogsRecords);
+      const noVariant = p.productNameNoVariant || noVariantForArticle(p.articleName);
+      const cogs = resolveCogs(p.vendorId, noVariant, p.plannedQty, cogsRecords);
       const cogsValue = cogs?.totalCOGS || 0;
       const price = priceForArticle(p.articleName);
-      return { ...p, cogsValue, price, margin: price - cogsValue };
+      const margin = cogsValue ? price / cogsValue : 0;
+      const { status, isDelayed } = computePlanStatus(p);
+      return { ...p, cogsValue, price, margin, status, isDelayed };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plans, cogsRecords, products]);
@@ -139,10 +179,11 @@ export default function ProductionPage() {
     [enrichedPlans, monthFilter]
   );
 
-  const statusFiltered = useMemo(
-    () => (statusFilter === "All" ? monthFiltered : monthFiltered.filter((p) => p.status === statusFilter)),
-    [monthFiltered, statusFilter]
-  );
+  const statusFiltered = useMemo(() => {
+    if (statusFilter === "All") return monthFiltered;
+    if (statusFilter === "Delayed") return monthFiltered.filter((p) => p.isDelayed);
+    return monthFiltered.filter((p) => p.status === statusFilter);
+  }, [monthFiltered, statusFilter]);
 
   const overall = useMemo(() => {
     const planned = monthFiltered.reduce((s, p) => s + num(p.plannedQty), 0);
@@ -168,6 +209,7 @@ export default function ProductionPage() {
       "WIP Date": p.wipDate,
       "Ready Stock (OPS)": p.readyStockOpsDate,
       "Ready Stock (PROD)": p.readyStockProdDate,
+      "Delay Date (PROD)": p.delayDate,
       Vendor: vendorName(p.vendorId),
       "Planned Qty": p.plannedQty,
       "Fulfilled Qty": p.fulfilledQty,
@@ -194,6 +236,7 @@ export default function ProductionPage() {
       wipDate: p.wipDate || "",
       readyStockOpsDate: p.readyStockOpsDate || "",
       readyStockProdDate: p.readyStockProdDate || "",
+      delayDate: p.delayDate || "",
       vendorId: p.vendorId || "",
       plannedQty: p.plannedQty ?? "",
       note: p.note || "",
@@ -215,13 +258,16 @@ export default function ProductionPage() {
       return;
     }
     const readyStockProdDate = form.readyStockProdDate || form.readyStockOpsDate;
+    const productNameNoVariant = noVariantForArticle(form.articleName);
     try {
       const payload = {
         articleName: form.articleName,
+        productNameNoVariant,
         batch: form.batch,
         wipDate: form.wipDate,
         readyStockOpsDate: form.readyStockOpsDate,
         readyStockProdDate,
+        delayDate: form.delayDate || null,
         vendorId: form.vendorId,
         plannedQty: Number(form.plannedQty),
         note: form.note,
@@ -232,7 +278,7 @@ export default function ProductionPage() {
       } else {
         await apiCreate(
           "productionPlans",
-          { ...payload, delayDate: null, fulfilledQty: 0, fulfilledDate: null, status: "Pending" },
+          { ...payload, fulfilledQty: 0, fulfilledDate: null, status: "Pending", isDelayed: false, fulfillHistory: [], history: [] },
           currentUser
         );
         showToast("Production plan disimpan");
@@ -251,6 +297,17 @@ export default function ProductionPage() {
       await apiDelete("productionPlans", deleteTarget.id, currentUser);
       showToast("Production plan dihapus");
       setDeleteTarget(null);
+      refresh();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // Step 2 of the 3-step workflow: Team Production confirms a Pending plan.
+  const confirmPlan = async (p) => {
+    try {
+      await apiUpdate("productionPlans", p.id, { status: "Confirmed" }, currentUser);
+      showToast(`"${p.articleName}" dikonfirmasi`);
       refresh();
     } catch (err) {
       showToast(err.message, "error");
@@ -288,7 +345,7 @@ export default function ProductionPage() {
     }
   };
 
-  // ---- Fulfilled Qty ----
+  // ---- Fulfilled Qty (Step 3: Warehouse) ----
   const openFulfill = (plan) => {
     setFulfillOpen(plan);
     setFulfillQty(String(plan.fulfilledQty || 0));
@@ -308,6 +365,31 @@ export default function ProductionPage() {
       showToast(err.message, "error");
     }
   };
+
+  // ---- History drawer (field edits + fulfilled qty history) ----
+  const historyRows = useMemo(() => {
+    if (!historyTarget) return [];
+    const rows = [];
+    for (const h of historyTarget.history || []) {
+      rows.push({
+        kind: "field",
+        label: h.label,
+        detail: `${h.oldValue || "-"} → ${h.newValue || "-"}`,
+        user: h.user,
+        timestamp: h.timestamp,
+      });
+    }
+    for (const f of historyTarget.fulfillHistory || []) {
+      rows.push({
+        kind: "fulfill",
+        label: "Fulfilled Qty",
+        detail: `${f.previousQty ?? 0} → ${f.qty}`,
+        user: f.user,
+        timestamp: f.date,
+      });
+    }
+    return rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  }, [historyTarget]);
 
   // ---- Import ----
   const openImport = () => {
@@ -405,7 +487,7 @@ export default function ProductionPage() {
       <div>
         <div className="label mb-1">Production Progress</div>
         <div className="flex gap-2 overflow-x-auto no-scrollbar">
-          {["All", ...STATUSES].map((s) => (
+          {["All", ...FILTER_CHIPS].map((s) => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
@@ -438,7 +520,7 @@ export default function ProductionPage() {
         <EmptyState title="Belum ada production plan." />
       ) : (
         <div className="overflow-x-auto card p-0">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm table-wide table-sticky">
             <thead className="bg-gray-50 text-left text-gray-500">
               <tr>
                 <th className="px-2 py-2">
@@ -448,46 +530,57 @@ export default function ProductionPage() {
                     onChange={toggleSelectAll}
                   />
                 </th>
-                <th className="px-3 py-2">WIP Date</th>
-                <th className="px-3 py-2">Ready OPS</th>
-                <th className="px-3 py-2">Ready PROD</th>
-                <th className="px-3 py-2">Delay Date</th>
-                <th className="px-3 py-2">Batch</th>
-                <th className="px-3 py-2">Vendor</th>
-                <th className="px-3 py-2">Product</th>
-                <th className="px-3 py-2 text-right">COGS</th>
-                <th className="px-3 py-2 text-right">Margin</th>
-                <th className="px-3 py-2 text-right">Price</th>
-                <th className="px-3 py-2 text-right">Qty</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2"></th>
+                <th>WIP Date</th>
+                <th>Ready OPS</th>
+                <th>Ready PROD</th>
+                <th>Delay Date (PROD)</th>
+                <th>Batch</th>
+                <th>Vendor (Sewing)</th>
+                <th>Product</th>
+                <th className="text-right">COGS</th>
+                <th className="text-right">Margin</th>
+                <th className="text-right">Price</th>
+                <th className="text-right">Planned Qty</th>
+                <th className="text-right">Fulfilled Qty</th>
+                <th>Fulfilled Date</th>
+                <th>Production Progress</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {statusFiltered.map((p) => (
-                <tr key={p.id} className="border-t border-gray-100">
-                  <td className="px-2 py-2">
+                <tr key={p.id} className="border-t border-gray-100 hover:bg-gray-50/60">
+                  <td className="px-2 py-2.5">
                     <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggleSelect(p.id)} />
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap">{p.wipDate || "-"}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{p.readyStockOpsDate || "-"}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{p.readyStockProdDate || "-"}</td>
-                  <td className="px-3 py-2 whitespace-nowrap text-red-600">{p.delayDate || "-"}</td>
-                  <td className="px-3 py-2">{p.batch || "-"}</td>
-                  <td className="px-3 py-2">{vendorName(p.vendorId)}</td>
-                  <td className="px-3 py-2 font-medium">{p.articleName}</td>
-                  <td className="px-3 py-2 text-right">{idr(p.cogsValue)}</td>
-                  <td className="px-3 py-2 text-right">{idr(p.margin)}</td>
-                  <td className="px-3 py-2 text-right">{idr(p.price)}</td>
-                  <td className="px-3 py-2 text-right">
-                    {p.fulfilledQty || 0}/{p.plannedQty}
+                  <td className="whitespace-nowrap">{p.wipDate || "-"}</td>
+                  <td className="whitespace-nowrap">{p.readyStockOpsDate || "-"}</td>
+                  <td className="whitespace-nowrap">{p.readyStockProdDate || "-"}</td>
+                  <td className="whitespace-nowrap text-red-600">{p.delayDate || "-"}</td>
+                  <td>{p.batch || "-"}</td>
+                  <td>{vendorName(p.vendorId)}</td>
+                  <td className="font-medium min-w-[180px]">{p.articleName}</td>
+                  <td className="text-right whitespace-nowrap">{idr(p.cogsValue)}</td>
+                  <td className="text-right whitespace-nowrap">{p.margin ? p.margin.toFixed(2) + "x" : "-"}</td>
+                  <td className="text-right whitespace-nowrap">{idr(p.price)}</td>
+                  <td className="text-right">{p.plannedQty}</td>
+                  <td className="text-right">{p.fulfilledQty || 0}</td>
+                  <td className="whitespace-nowrap">{p.fulfilledDate ? p.fulfilledDate.slice(0, 10) : "-"}</td>
+                  <td className="whitespace-nowrap">
+                    <span className={statusBadgeClass(p.status)}>{p.status}</span>
+                    {p.isDelayed && <span className="badge-red ml-1">Delayed</span>}
                   </td>
-                  <td className="px-3 py-2">
-                    <span className="text-xs px-2 py-0.5 rounded-full border border-gray-200 whitespace-nowrap">{p.status}</span>
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  <td className="whitespace-nowrap">
+                    {p.status === "Pending" && (
+                      <button className="text-xs text-blue-600 hover:underline px-1.5 py-1" onClick={() => confirmPlan(p)}>
+                        Confirm
+                      </button>
+                    )}
                     <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => openFulfill(p)}>
                       Fulfill
+                    </button>
+                    <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => setHistoryTarget(p)}>
+                      History
                     </button>
                     <button className="text-xs text-gray-400 hover:text-ink px-1.5 py-1" onClick={() => openEdit(p)}>
                       Edit
@@ -506,12 +599,12 @@ export default function ProductionPage() {
       <Modal open={addOpen} onClose={() => setAddOpen(false)} title={editing ? "Edit Production Plan" : "Add Production Plan"} wide>
         <form onSubmit={submitPlan} className="flex flex-col gap-3">
           <div>
-            <label className="label">Article Name *</label>
+            <label className="label">Article Name (Product) *</label>
             <SearchableSelect
               value={form.articleName}
               onChange={(v) => setForm({ ...form, articleName: v })}
               options={articleOptions}
-              placeholder="Pilih article (dari Product)"
+              placeholder="Pilih product (nama lengkap dengan variant)"
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -544,15 +637,27 @@ export default function ProductionPage() {
               />
             </div>
           </div>
-          <div>
-            <label className="label">Ready Stock Date (PROD)</label>
-            <input
-              type="date"
-              className="input"
-              value={form.readyStockProdDate}
-              onChange={(e) => setForm({ ...form, readyStockProdDate: e.target.value })}
-            />
-            <div className="text-xs text-gray-400 mt-1">Kosongkan untuk memakai tanggal yang sama dengan Ready Stock Date (OPS).</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Ready Stock Date (PROD)</label>
+              <input
+                type="date"
+                className="input"
+                value={form.readyStockProdDate}
+                onChange={(e) => setForm({ ...form, readyStockProdDate: e.target.value })}
+              />
+              <div className="text-xs text-gray-400 mt-1">Kosongkan untuk memakai tanggal Ready Stock (OPS).</div>
+            </div>
+            <div>
+              <label className="label">Delay Date (PROD)</label>
+              <input
+                type="date"
+                className="input"
+                value={form.delayDate}
+                onChange={(e) => setForm({ ...form, delayDate: e.target.value })}
+              />
+              <div className="text-xs text-gray-400 mt-1">Opsional - diisi Team Production saat terjadi delay.</div>
+            </div>
           </div>
           <div>
             <label className="label">Vendor (Sewing) *</label>
@@ -564,6 +669,7 @@ export default function ProductionPage() {
                 </option>
               ))}
             </select>
+            <div className="text-xs text-gray-400 mt-1">Mengganti vendor otomatis memperbarui COGS &amp; data vendor terkait.</div>
           </div>
           <div>
             <label className="label">Note</label>
@@ -581,10 +687,32 @@ export default function ProductionPage() {
             <label className="label">Fulfilled Qty (Planned: {fulfillOpen?.plannedQty})</label>
             <input type="number" className="input" value={fulfillQty} onChange={(e) => setFulfillQty(e.target.value)} />
           </div>
+          <div className="text-xs text-gray-400">
+            Setiap update Fulfilled Qty akan tersimpan di History (tidak menimpa data sebelumnya).
+          </div>
           <button type="submit" className="btn-primary mt-2">
             Simpan
           </button>
         </form>
+      </Modal>
+
+      <Modal open={!!historyTarget} onClose={() => setHistoryTarget(null)} title={`History - ${historyTarget?.articleName || ""}`} wide>
+        {historyRows.length === 0 ? (
+          <EmptyState title="Belum ada history perubahan untuk production plan ini." />
+        ) : (
+          <div className="flex flex-col gap-2">
+            {historyRows.map((h, i) => (
+              <div key={i} className="border border-gray-100 rounded-lg px-3 py-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">{h.label}</span>
+                  <span className="text-xs text-gray-400">{fmtDateTime(h.timestamp)}</span>
+                </div>
+                <div className="text-gray-600 mt-0.5">{h.detail}</div>
+                <div className="text-xs text-gray-400 mt-0.5">oleh {h.user}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </Modal>
 
       <Modal open={bulkStatusOpen} onClose={() => setBulkStatusOpen(false)} title={`Ubah Status (${selected.length} plan)`}>

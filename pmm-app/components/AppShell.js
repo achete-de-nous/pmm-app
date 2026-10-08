@@ -27,7 +27,7 @@ export default function AppShell({ children }) {
   return (
     <div className="min-h-screen bg-white text-ink font-sans">
       <header className="sticky top-0 z-40 bg-white border-b border-gray-200">
-        <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center justify-between px-4 sm:px-6 lg:px-10 py-3 max-w-[1680px] mx-auto w-full">
           <div className="font-semibold tracking-tight">Production &amp; Material</div>
           <button
             onClick={() => setConfirmLogout(true)}
@@ -37,7 +37,7 @@ export default function AppShell({ children }) {
             {currentUser}
           </button>
         </div>
-        <nav className="flex gap-1 overflow-x-auto px-3 pb-2 no-scrollbar">
+        <nav className="flex gap-1 overflow-x-auto px-4 sm:px-6 lg:px-10 pb-2 no-scrollbar max-w-[1680px] mx-auto w-full">
           {NAV.map((item) => {
             const active = pathname === item.href;
             return (
@@ -55,7 +55,7 @@ export default function AppShell({ children }) {
         </nav>
       </header>
 
-      <main className="px-4 py-5 max-w-5xl mx-auto">{children}</main>
+      <main className="px-4 sm:px-6 lg:px-10 py-5 max-w-[1680px] mx-auto w-full">{children}</main>
 
       <ConfirmDialog
         open={confirmLogout}

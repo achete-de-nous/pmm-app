@@ -45,6 +45,10 @@ export async function POST(req) {
       "productionPlans",
       {
         articleName,
+        // Import template's "Article Name" column matches Product's "no
+        // variant" family name (see classifyProductionRows), so it doubles
+        // as the COGS-matching field too.
+        productNameNoVariant: articleName,
         batch: "",
         wipDate,
         readyStockOpsDate: readyStockOps,
@@ -55,6 +59,9 @@ export async function POST(req) {
         fulfilledQty: 0,
         fulfilledDate: null,
         status: "Pending",
+        isDelayed: false,
+        fulfillHistory: [],
+        history: [],
         note: "Imported dari file",
       },
       user

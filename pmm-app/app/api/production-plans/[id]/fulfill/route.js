@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getRecord, updateRecord } from "@/lib/store";
 import { computePlanStatus } from "@/lib/calc";
 
+// Fulfilled Qty updates must keep full history (every update, not just the
+// latest value) with an auto-recorded Fulfilled Date each time - per REVISI spec.
 export async function POST(req, { params }) {
   const { id } = params;
   const body = await req.json();
@@ -20,16 +22,32 @@ export async function POST(req, { params }) {
     );
   }
 
-  // Fulfilled Date always tracks the most recent update to Fulfilled Qty.
   const now = new Date().toISOString();
+  const oldFulfilledDate = plan.fulfilledDate || null;
+
   const draft = { ...plan, fulfilledQty: fulfilled, fulfilledDate: now };
-  const status = computePlanStatus(draft);
-  const delayDate = status === "Delayed" ? now : plan.delayDate || null;
+  const { status, isDelayed } = computePlanStatus(draft);
+
+  const fulfillHistory = [
+    ...(plan.fulfillHistory || []),
+    { qty: fulfilled, previousQty: Number(plan.fulfilledQty) || 0, date: now, user: user || "Unknown" },
+  ];
+  const history = [
+    ...(plan.history || []),
+    {
+      field: "fulfilledDate",
+      label: "Fulfilled Date",
+      oldValue: oldFulfilledDate,
+      newValue: now,
+      user: user || "Unknown",
+      timestamp: now,
+    },
+  ];
 
   const updated = await updateRecord(
     "productionPlans",
     id,
-    { fulfilledQty: fulfilled, fulfilledDate: now, status, delayDate },
+    { fulfilledQty: fulfilled, fulfilledDate: now, status, isDelayed, fulfillHistory, history },
     user
   );
 

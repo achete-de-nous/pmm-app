@@ -5,6 +5,7 @@ import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
 import EmptyState from "@/components/EmptyState";
+import SearchableSelect from "@/components/SearchableSelect";
 
 const UNITS = ["Meter", "Pcs"];
 const num = (v) => Number(v) || 0;
@@ -47,6 +48,11 @@ export default function MaterialTransactionsPage() {
   // from a Supplier into the Warehouse before it can move on to a sewing vendor.
   const locationOptions = useMemo(() => ["Supplier", "Warehouse", ...vendors.map((v) => v.id)], [vendors]);
   const locationLabel = (id) => (id === "Warehouse" || id === "Supplier" ? id : vendorName(id));
+  const locationSelectOptions = useMemo(
+    () => locationOptions.map((id) => ({ value: id, label: locationLabel(id) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [locationOptions, vendors]
+  );
 
   const filteredMaterialOptions = useMemo(() => {
     const q = materialSearch.trim().toLowerCase();
@@ -193,25 +199,21 @@ export default function MaterialTransactionsPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Dari</label>
-              <select className="input" value={form.fromLoc} onChange={(e) => setForm({ ...form, fromLoc: e.target.value })}>
-                <option value="">Pilih lokasi</option>
-                {locationOptions.map((id) => (
-                  <option key={id} value={id}>
-                    {locationLabel(id)}
-                  </option>
-                ))}
-              </select>
+              <SearchableSelect
+                value={form.fromLoc}
+                onChange={(v) => setForm({ ...form, fromLoc: v })}
+                options={locationSelectOptions}
+                placeholder="Pilih lokasi"
+              />
             </div>
             <div>
               <label className="label">Ke</label>
-              <select className="input" value={form.toLoc} onChange={(e) => setForm({ ...form, toLoc: e.target.value })}>
-                <option value="">Pilih lokasi</option>
-                {locationOptions.map((id) => (
-                  <option key={id} value={id}>
-                    {locationLabel(id)}
-                  </option>
-                ))}
-              </select>
+              <SearchableSelect
+                value={form.toLoc}
+                onChange={(v) => setForm({ ...form, toLoc: v })}
+                options={locationSelectOptions}
+                placeholder="Pilih lokasi"
+              />
             </div>
           </div>
 
