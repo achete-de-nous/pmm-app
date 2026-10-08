@@ -58,7 +58,10 @@ export default function TrialBalancePage() {
     }
   };
 
-  const materialOptions = useMemo(() => materials.map((m) => ({ value: m.name, label: m.name })), [materials]);
+  const materialOptions = useMemo(
+    () => [{ value: "", label: "All" }, ...materials.map((m) => ({ value: m.name, label: m.name }))],
+    [materials]
+  );
   const vendorOptions = useMemo(() => vendors.map((v) => ({ value: v.id, label: v.name })), [vendors]);
 
   const sortedRows = useMemo(() => rows.slice().sort((a, b) => (a.date || "").localeCompare(b.date || "")), [rows]);

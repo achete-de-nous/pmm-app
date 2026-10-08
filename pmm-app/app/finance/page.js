@@ -1,10 +1,10 @@
 "use client";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiList, apiUpdate, apiPost } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import EmptyState from "@/components/EmptyState";
-import { DP_MODES, PAYMENT_TERM_MODES, computeFinanceTotals } from "@/lib/calc";
+import { DP_MODES, PAYMENT_TERM_MODES, PAYMENT_STATUSES, computeFinanceTotals } from "@/lib/calc";
 
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 const num = (v) => Number(v) || 0;
@@ -33,7 +33,7 @@ export default function FinancePage() {
   const [view, setView] = useState("ALL"); // "ALL" | "DONE"
   const [monthFilter, setMonthFilter] = useState("");
   const [expandedId, setExpandedId] = useState(null);
-  const [draftById, setDraftById] = useState({}); // financeId -> { dp, payments }
+  const [draftById, setDraftById] = useState({});
 
   const sync = async (showResult) => {
     setSyncing(true);
@@ -42,8 +42,8 @@ export default function FinancePage() {
       setRecords(result.records);
       if (showResult) {
         const parts = [];
-        if (result.created) parts.push(`${result.created} Finance baru dari Production yang Confirmed`);
-        if (result.removed) parts.push(`${result.removed} Finance dihapus (plan On Hold/terhapus)`);
+        if (result.created) parts.push(`${result.created} Finance baru`);
+        if (result.removed) parts.push(`${result.removed} dihapus (plan On Hold/terhapus)`);
         showToast(parts.length > 0 ? parts.join(", ") : "Tidak ada perubahan");
       }
     } catch (err) {
@@ -82,18 +82,29 @@ export default function FinancePage() {
     [enriched, monthFilter]
   );
 
-  // ---- Draft editing (DP + Payment Term list) per expanded record ----
+  // ---- Combined payment rows helper: DP is always the first (locked) row ----
+  const paymentRows = (record) => [
+    { id: "dp", kind: "dp", label: "DP", ...record.dp, amount: record.dpAmount },
+    ...(record.payments || []).map((p, i) => ({ ...p, kind: "termin", label: `Termin ${i + 1}` })),
+  ];
+
   const startEdit = (record) => {
     setDraftById((s) => ({
       ...s,
       [record.id]: {
-        dp: record.dp || { mode: "10%", amount: 0 },
+        dp: { mode: record.dp?.mode || "10%", amount: record.dp?.amount || 0, date: record.dp?.date || "", status: record.dp?.status || "Pending", proof: record.dp?.proof || "" },
         payments: (record.payments || []).map((p) => ({ ...p })),
       },
     }));
   };
 
-  const draftFor = (record) => draftById[record.id];
+  const cancelEdit = (record) => {
+    setDraftById((s) => {
+      const copy = { ...s };
+      delete copy[record.id];
+      return copy;
+    });
+  };
 
   const updateDp = (record, patch) => {
     setDraftById((s) => ({ ...s, [record.id]: { ...s[record.id], dp: { ...s[record.id].dp, ...patch } } }));
@@ -104,7 +115,7 @@ export default function FinancePage() {
       ...s,
       [record.id]: {
         ...s[record.id],
-        payments: [...s[record.id].payments, { id: uid(), mode: "Sisanya", amount: 0, date: "" }],
+        payments: [...s[record.id].payments, { id: uid(), mode: "Sisanya", amount: 0, date: "", status: "Pending", proof: "" }],
       },
     }));
   };
@@ -126,21 +137,12 @@ export default function FinancePage() {
     }));
   };
 
-  const cancelEdit = (record) => {
-    setDraftById((s) => {
-      const copy = { ...s };
-      delete copy[record.id];
-      return copy;
-    });
-  };
-
   const saveRecord = async (record) => {
-    const draft = draftFor(record);
+    const draft = draftById[record.id];
     if (!draft) return;
-    const patch = { dp: draft.dp, payments: draft.payments };
-    const { financeProgress } = computeFinanceTotals({ ...record, ...patch });
+    const { financeProgress } = computeFinanceTotals({ ...record, ...draft });
     try {
-      const updated = await apiUpdate("financeRecords", record.id, { ...patch, financeProgress }, currentUser);
+      const updated = await apiUpdate("financeRecords", record.id, { ...draft, financeProgress }, currentUser);
       setRecords((rs) => rs.map((r) => (r.id === record.id ? updated : r)));
       showToast(
         financeProgress === "Done" && record.financeProgress !== "Done"
@@ -154,20 +156,19 @@ export default function FinancePage() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="text-lg font-semibold">Finance</div>
         <button className="btn-secondary text-xs" onClick={() => sync(true)} disabled={syncing}>
-          {syncing ? "Sync..." : "Sync dari Production (Confirmed)"}
+          {syncing ? "Sync..." : "Sync dari Production"}
         </button>
       </div>
 
-      <div className="card max-w-xs">
-        <div className="label">Remaining Cost {monthFilter ? `- ${monthLabel(monthFilter)}` : ""}</div>
-        <div className="text-2xl font-semibold">{idr(overallRemaining)}</div>
-      </div>
-
-      <div className="flex gap-2 items-center flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="card py-2 px-3">
+          <div className="label mb-0.5">Remaining Cost {monthFilter ? `- ${monthLabel(monthFilter)}` : "(semua)"}</div>
+          <div className="text-xl font-semibold">{idr(overallRemaining)}</div>
+        </div>
         <div className="flex gap-2">
           {["ALL", "DONE"].map((v) => (
             <button
@@ -182,7 +183,7 @@ export default function FinancePage() {
           ))}
         </div>
         <select className="input w-auto ml-auto" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)}>
-          <option value="">Semua Bulan</option>
+          <option value="">Month: All</option>
           {monthOptions.map((m) => (
             <option key={m} value={m}>
               {monthLabel(m)}
@@ -202,199 +203,235 @@ export default function FinancePage() {
           }
         />
       ) : (
-        <div className="overflow-x-auto card p-0">
-          <table className="w-full text-sm table-wide">
-            <thead className="bg-gray-50 text-left text-gray-500">
-              <tr>
-                <th></th>
-                <th>WIP Date</th>
-                <th>Ready OPS</th>
-                <th>Ready PROD</th>
-                <th>Delayed PROD</th>
-                <th>Vendor Sewing</th>
-                <th>Product Name</th>
-                <th className="text-right">COGS /unit</th>
-                <th className="text-right">Total Harga Bahan Utama</th>
-                <th className="text-right">Remaining</th>
-                <th>Finance Progress</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => {
-                const isOpen = expandedId === r.id;
-                const draft = draftFor(r);
-                return (
-                  <Fragment key={r.id}>
-                    <tr
-                      className="border-t border-gray-100 cursor-pointer hover:bg-gray-50"
-                      onClick={() => setExpandedId(isOpen ? null : r.id)}
-                    >
-                      <td className="px-3 py-2.5 text-gray-400 text-xs">{isOpen ? "▲" : "▼"}</td>
-                      <td className="whitespace-nowrap">{r.wipDate || "-"}</td>
-                      <td className="whitespace-nowrap">{r.readyStockOpsDate || "-"}</td>
-                      <td className="whitespace-nowrap">{r.readyStockProdDate || "-"}</td>
-                      <td className="whitespace-nowrap text-red-600">{r.delayDateProd || "-"}</td>
-                      <td>{r.vendorName}</td>
-                      <td className="font-medium min-w-[180px]">
-                        {r.articleName} <span className="text-gray-400">· Batch {r.batchLabel}</span>
-                      </td>
-                      <td className="text-right whitespace-nowrap">{idr(r.cogsPerUnit)}</td>
-                      <td className="text-right whitespace-nowrap font-medium">{idr(r.totalHargaBahanUtama)}</td>
-                      <td className="text-right whitespace-nowrap">{idr(r.remaining)}</td>
-                      <td>
-                        <span className={r.financeProgress === "Done" ? "badge-green" : "badge-amber"}>
-                          {r.financeProgress === "Done" ? "Done" : "Pending"}
-                        </span>
-                      </td>
-                    </tr>
-                    {isOpen && (
-                      <tr className="border-t border-gray-100 bg-gray-50/60">
-                        <td colSpan={11} className="px-4 py-4">
-                          <div className="flex items-center justify-between text-sm mb-3">
-                            <div className="text-gray-500">
-                              Total Harga Bahan Utama (COGS {idr(r.cogsPerUnit)} × Qty {r.qty}) ={" "}
-                              <span className="font-semibold text-ink">{idr(r.totalHargaBahanUtama)}</span>
-                            </div>
-                            {!draft && (
-                              <button className="btn-secondary text-xs" onClick={() => startEdit(r)}>
-                                Update Pembayaran
-                              </button>
+        <div className="flex flex-col gap-3">
+          {filtered.map((r) => {
+            const isOpen = expandedId === r.id;
+            const draft = draftById[r.id];
+            const rows = paymentRows(r);
+            return (
+              <div key={r.id} className="card p-0 overflow-hidden">
+                <div
+                  className="flex items-center justify-between gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 flex-wrap"
+                  onClick={() => setExpandedId(isOpen ? null : r.id)}
+                >
+                  <div>
+                    <div className="font-medium">
+                      {r.articleName} <span className="text-gray-400">· Batch {r.batchLabel} · {r.vendorName}</span>
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      WIP {r.wipDate || "-"} · Ready PROD {r.readyStockProdDate || "-"}
+                      {r.delayDateProd ? <span className="text-red-500"> · Delay {r.delayDateProd}</span> : null}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 text-sm">
+                    <div className="text-right">
+                      <div className="text-xs text-gray-400">Total Harga Bahan Utama</div>
+                      <div className="font-semibold">{idr(r.totalHargaBahanUtama)}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-gray-400">Remaining</div>
+                      <div className="font-semibold">{idr(r.remaining)}</div>
+                    </div>
+                    <span className={r.financeProgress === "Done" ? "badge-green" : "badge-amber"}>
+                      {r.financeProgress === "Done" ? "Done" : "Pending"}
+                    </span>
+                    <span className="text-gray-400 text-xs">{isOpen ? "▲" : "▼"}</span>
+                  </div>
+                </div>
+
+                {isOpen && (
+                  <div className="border-t border-gray-100 px-4 py-4 flex flex-col gap-4 bg-gray-50/40">
+                    <div>
+                      <div className="label mb-1">Material Cost</div>
+                      {(r.materials || []).length === 0 ? (
+                        <div className="text-xs text-gray-400">Tidak ada material pada COGS ini.</div>
+                      ) : (
+                        <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50 text-left text-gray-500">
+                              <tr>
+                                <th className="px-3 py-1.5">Material</th>
+                                <th className="px-3 py-1.5 text-right">Qty</th>
+                                <th className="px-3 py-1.5">Unit</th>
+                                <th className="px-3 py-1.5 text-right">COGS</th>
+                                <th className="px-3 py-1.5 text-right">Total Payment</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {r.materials.map((m, i) => (
+                                <tr key={i} className="border-t border-gray-100">
+                                  <td className="px-3 py-1.5">{m.materialName}</td>
+                                  <td className="px-3 py-1.5 text-right">{m.qtyTotal}</td>
+                                  <td className="px-3 py-1.5">{m.unit}</td>
+                                  <td className="px-3 py-1.5 text-right">{idr(m.cogsPerUnit)}</td>
+                                  <td className="px-3 py-1.5 text-right font-medium">{idr(m.totalPayment)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr className="border-t border-gray-200 font-semibold">
+                                <td className="px-3 py-1.5" colSpan={4}>
+                                  Total Harga Bahan Utama
+                                </td>
+                                <td className="px-3 py-1.5 text-right">{idr(r.totalHargaBahanUtama)}</td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="label mb-0">Payment</div>
+                        {!draft && (
+                          <button className="btn-secondary text-xs" onClick={() => startEdit(r)}>
+                            Update Pembayaran
+                          </button>
+                        )}
+                      </div>
+
+                      {!draft ? (
+                        <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50 text-left text-gray-500">
+                              <tr>
+                                <th className="px-3 py-1.5">Term</th>
+                                <th className="px-3 py-1.5">Payment</th>
+                                <th className="px-3 py-1.5 text-right">Amount</th>
+                                <th className="px-3 py-1.5">Date</th>
+                                <th className="px-3 py-1.5">Status</th>
+                                <th className="px-3 py-1.5">Proof</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.map((row) => (
+                                <tr key={row.id} className="border-t border-gray-100">
+                                  <td className="px-3 py-1.5">{row.label}</td>
+                                  <td className="px-3 py-1.5">{row.mode}</td>
+                                  <td className="px-3 py-1.5 text-right font-medium">{idr(row.amount)}</td>
+                                  <td className="px-3 py-1.5">{row.date || "-"}</td>
+                                  <td className="px-3 py-1.5">
+                                    <span className={row.status === "Paid" ? "badge-green" : "badge-amber"}>{row.status}</span>
+                                  </td>
+                                  <td className="px-3 py-1.5 text-gray-500">{row.proof || "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-2 border border-gray-200 rounded-lg bg-white p-3">
+                          <div className="flex items-center gap-2 flex-wrap text-xs">
+                            <span className="w-16 text-gray-400">DP</span>
+                            <select className="input py-1 text-xs w-28" value={draft.dp.mode} onChange={(e) => updateDp(r, { mode: e.target.value })}>
+                              {DP_MODES.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                            {draft.dp.mode === "Manual" ? (
+                              <input
+                                type="number"
+                                className="input py-1 text-xs w-28"
+                                placeholder="Nominal"
+                                value={draft.dp.amount}
+                                onChange={(e) => updateDp(r, { amount: e.target.value })}
+                              />
+                            ) : (
+                              <span className="w-28 text-gray-500">dihitung otomatis</span>
                             )}
+                            <input type="date" className="input py-1 text-xs w-32" value={draft.dp.date || ""} onChange={(e) => updateDp(r, { date: e.target.value })} />
+                            <select className="input py-1 text-xs w-24" value={draft.dp.status} onChange={(e) => updateDp(r, { status: e.target.value })}>
+                              {PAYMENT_STATUSES.map((s) => (
+                                <option key={s} value={s}>
+                                  {s}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              className="input py-1 text-xs flex-1 min-w-[120px]"
+                              placeholder="Payment proof / reference"
+                              value={draft.dp.proof || ""}
+                              onChange={(e) => updateDp(r, { proof: e.target.value })}
+                            />
                           </div>
 
-                          {!draft ? (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-                              <div className="border border-gray-200 rounded-lg p-3 bg-white">
-                                <div className="text-xs text-gray-500">DP</div>
-                                <div className="font-medium">
-                                  {r.dp?.mode || "-"} · {idr(r.dpAmount)}
-                                </div>
-                              </div>
-                              <div className="border border-gray-200 rounded-lg p-3 bg-white sm:col-span-2">
-                                <div className="text-xs text-gray-500 mb-1">Payment Term / Pelunasan</div>
-                                {(!r.payments || r.payments.length === 0) ? (
-                                  <div className="text-gray-400 text-xs">Belum ada termin pembayaran.</div>
-                                ) : (
-                                  <div className="flex flex-col gap-1">
-                                    {r.payments.map((p, i) => (
-                                      <div key={p.id} className="flex items-center justify-between">
-                                        <span>
-                                          Termin {i + 1} ({p.mode}) {p.date ? `· ${p.date}` : ""}
-                                        </span>
-                                        <span className="font-medium">{idr(p.amount)}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className="flex items-center justify-between border-t border-gray-100 mt-2 pt-2 font-semibold">
-                                  <span>Remaining</span>
-                                  <span>{idr(r.remaining)}</span>
-                                </div>
-                              </div>
+                          {draft.payments.map((p, i) => (
+                            <div key={p.id} className="flex items-center gap-2 flex-wrap text-xs">
+                              <span className="w-16 text-gray-400">Termin {i + 1}</span>
+                              <select
+                                className="input py-1 text-xs w-28"
+                                value={p.mode}
+                                onChange={(e) => updatePayment(r, p.id, { mode: e.target.value })}
+                              >
+                                {PAYMENT_TERM_MODES.map((m) => (
+                                  <option key={m} value={m}>
+                                    {m}
+                                  </option>
+                                ))}
+                              </select>
+                              {p.mode === "Manual" ? (
+                                <input
+                                  type="number"
+                                  className="input py-1 text-xs w-28"
+                                  placeholder="Nominal"
+                                  value={p.amount}
+                                  onChange={(e) => updatePayment(r, p.id, { amount: e.target.value })}
+                                />
+                              ) : (
+                                <span className="w-28 text-gray-500">dihitung otomatis</span>
+                              )}
+                              <input
+                                type="date"
+                                className="input py-1 text-xs w-32"
+                                value={p.date || ""}
+                                onChange={(e) => updatePayment(r, p.id, { date: e.target.value })}
+                              />
+                              <select
+                                className="input py-1 text-xs w-24"
+                                value={p.status}
+                                onChange={(e) => updatePayment(r, p.id, { status: e.target.value })}
+                              >
+                                {PAYMENT_STATUSES.map((s) => (
+                                  <option key={s} value={s}>
+                                    {s}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                className="input py-1 text-xs flex-1 min-w-[120px]"
+                                placeholder="Payment proof / reference"
+                                value={p.proof || ""}
+                                onChange={(e) => updatePayment(r, p.id, { proof: e.target.value })}
+                              />
+                              <button type="button" className="text-gray-400 hover:text-red-600" onClick={() => removePayment(r, p.id)}>
+                                Hapus
+                              </button>
                             </div>
-                          ) : (
-                            <div className="flex flex-col gap-4">
-                              <div className="border border-gray-200 rounded-lg p-3 bg-white max-w-sm">
-                                <div className="label">DP</div>
-                                <select
-                                  className="input mb-2"
-                                  value={draft.dp.mode}
-                                  onChange={(e) => updateDp(r, { mode: e.target.value })}
-                                >
-                                  {DP_MODES.map((m) => (
-                                    <option key={m} value={m}>
-                                      {m}
-                                    </option>
-                                  ))}
-                                </select>
-                                {draft.dp.mode === "Manual" ? (
-                                  <input
-                                    type="number"
-                                    className="input"
-                                    placeholder="Nominal DP"
-                                    value={draft.dp.amount}
-                                    onChange={(e) => updateDp(r, { amount: e.target.value })}
-                                  />
-                                ) : (
-                                  <div className="text-sm text-gray-500">
-                                    = {idr((parseFloat(draft.dp.mode) / 100) * num(r.totalHargaBahanUtama))}
-                                  </div>
-                                )}
-                              </div>
+                          ))}
 
-                              <div className="border border-gray-200 rounded-lg p-3 bg-white">
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="label mb-0">Payment Term / Pelunasan</div>
-                                  <button type="button" className="btn-secondary text-xs" onClick={() => addPayment(r)}>
-                                    + Tambah Termin
-                                  </button>
-                                </div>
-                                {draft.payments.length === 0 ? (
-                                  <div className="text-xs text-gray-400">Belum ada termin. Klik + Tambah Termin.</div>
-                                ) : (
-                                  <div className="flex flex-col gap-2">
-                                    {draft.payments.map((p, i) => (
-                                      <div key={p.id} className="flex items-center gap-2 flex-wrap">
-                                        <span className="text-xs text-gray-400 w-16">Termin {i + 1}</span>
-                                        <select
-                                          className="input py-1 text-xs w-32"
-                                          value={p.mode}
-                                          onChange={(e) => updatePayment(r, p.id, { mode: e.target.value })}
-                                        >
-                                          {PAYMENT_TERM_MODES.map((m) => (
-                                            <option key={m} value={m}>
-                                              {m}
-                                            </option>
-                                          ))}
-                                        </select>
-                                        {p.mode === "Manual" ? (
-                                          <input
-                                            type="number"
-                                            className="input py-1 text-xs w-32"
-                                            placeholder="Nominal"
-                                            value={p.amount}
-                                            onChange={(e) => updatePayment(r, p.id, { amount: e.target.value })}
-                                          />
-                                        ) : (
-                                          <span className="text-xs text-gray-500 w-32">dihitung otomatis</span>
-                                        )}
-                                        <input
-                                          type="date"
-                                          className="input py-1 text-xs w-36"
-                                          value={p.date || ""}
-                                          onChange={(e) => updatePayment(r, p.id, { date: e.target.value })}
-                                        />
-                                        <button
-                                          type="button"
-                                          className="text-xs text-gray-400 hover:text-red-600"
-                                          onClick={() => removePayment(r, p.id)}
-                                        >
-                                          Hapus
-                                        </button>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
+                          <button type="button" className="btn-secondary text-xs self-start" onClick={() => addPayment(r)}>
+                            + Tambah Termin
+                          </button>
 
-                              <div className="flex items-center gap-2">
-                                <button type="button" className="btn-primary text-xs" onClick={() => saveRecord(r)}>
-                                  Simpan
-                                </button>
-                                <button type="button" className="text-xs text-gray-400" onClick={() => cancelEdit(r)}>
-                                  Batal
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+                          <div className="flex items-center gap-2 pt-2 border-t border-gray-100 mt-1">
+                            <button type="button" className="btn-primary text-xs" onClick={() => saveRecord(r)}>
+                              Simpan
+                            </button>
+                            <button type="button" className="text-xs text-gray-400" onClick={() => cancelEdit(r)}>
+                              Batal
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

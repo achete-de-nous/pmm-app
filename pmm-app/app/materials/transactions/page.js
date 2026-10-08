@@ -1,40 +1,42 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { apiList, apiCreate, apiCalc } from "@/lib/api-client";
+import { apiList, apiCreate } from "@/lib/api-client";
 import { useUser } from "@/components/UserContext";
 import { useToast } from "@/components/ToastContext";
 import Modal from "@/components/Modal";
-import EmptyState from "@/components/EmptyState";
 import SearchableSelect from "@/components/SearchableSelect";
 
 const UNITS = ["Meter", "Pcs"];
 const num = (v) => Number(v) || 0;
 const idr = (n) => "Rp" + Math.round(n || 0).toLocaleString("id-ID");
 
-const emptyForm = { fromLoc: "", toLoc: "", materialName: "", quantity: "", unit: "", deliveryDate: "", reference: "", note: "" };
+const TRANSACTION_TYPES = ["Pembelian Bahan", "Perpindahan Bahan"];
+
+const emptyForm = {
+  transactionType: "Pembelian Bahan",
+  fromLoc: "",
+  toLoc: "",
+  materialName: "",
+  quantity: "",
+  unit: "",
+  deliveryDate: "",
+  reference: "",
+  note: "",
+};
 
 export default function MaterialTransactionsPage() {
   const { currentUser } = useUser();
   const { showToast } = useToast();
   const [materials, setMaterials] = useState([]);
   const [vendors, setVendors] = useState([]);
-  const [transactions, setTransactions] = useState([]);
-  const [vendorBalances, setVendorBalances] = useState([]);
   const [open, setOpen] = useState(false);
   const [materialSearch, setMaterialSearch] = useState("");
   const [form, setForm] = useState(emptyForm);
 
   const refresh = async () => {
-    const [m, v, t, vb] = await Promise.all([
-      apiList("materials"),
-      apiList("vendors"),
-      apiList("materialTransactions"),
-      apiCalc("vendor-balances"),
-    ]);
+    const [m, v] = await Promise.all([apiList("materials"), apiList("vendors")]);
     setMaterials(m);
     setVendors(v);
-    setTransactions(t);
-    setVendorBalances(vb);
   };
 
   useEffect(() => {
@@ -42,17 +44,22 @@ export default function MaterialTransactionsPage() {
   }, []);
 
   const vendorName = (id) => vendors.find((v) => v.id === id)?.name || id;
+  const sewingVendors = useMemo(() => vendors.filter((v) => (v.vendorType || "").toLowerCase() === "sewing"), [vendors]);
 
-  // "Dari"/"Ke" dropdown: Supplier and Warehouse are always available as fixed
-  // locations alongside every Vendor - material still needs to enter the system
-  // from a Supplier into the Warehouse before it can move on to a sewing vendor.
-  const locationOptions = useMemo(() => ["Supplier", "Warehouse", ...vendors.map((v) => v.id)], [vendors]);
-  const locationLabel = (id) => (id === "Warehouse" || id === "Supplier" ? id : vendorName(id));
-  const locationSelectOptions = useMemo(
-    () => locationOptions.map((id) => ({ value: id, label: locationLabel(id) })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [locationOptions, vendors]
-  );
+  // Pembelian Bahan: Dari/Ke boleh Vendor manapun (Dari = supplier/source,
+  // Ke = vendor yang menerima/menyimpan bahan - hanya ini yang masuk Trial Balance).
+  // Perpindahan Bahan: Dari/Ke hanya boleh Warehouse atau Vendor ber-type Sewing.
+  const locationOptions = useMemo(() => {
+    if (form.transactionType === "Perpindahan Bahan") {
+      return [
+        { value: "Warehouse", label: "Warehouse" },
+        ...sewingVendors.map((v) => ({ value: v.id, label: v.name })),
+      ];
+    }
+    return vendors.map((v) => ({ value: v.id, label: v.name }));
+  }, [form.transactionType, vendors, sewingVendors]);
+
+  const locationLabel = (id) => (id === "Warehouse" ? "Warehouse" : vendorName(id));
 
   const filteredMaterialOptions = useMemo(() => {
     const q = materialSearch.trim().toLowerCase();
@@ -69,6 +76,10 @@ export default function MaterialTransactionsPage() {
     setForm((f) => ({ ...f, materialName: name, unit: mat?.unit || f.unit }));
   };
 
+  const setTransactionType = (transactionType) => {
+    setForm((f) => ({ ...f, transactionType, fromLoc: "", toLoc: "" }));
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.materialName || !form.quantity || !form.toLoc || !form.fromLoc) {
@@ -83,6 +94,7 @@ export default function MaterialTransactionsPage() {
       await apiCreate(
         "materialTransactions",
         {
+          transactionType: form.transactionType,
           materialName: form.materialName,
           quantity: Number(form.quantity),
           unit: form.unit,
@@ -105,104 +117,51 @@ export default function MaterialTransactionsPage() {
     }
   };
 
-  const vendorGroups = useMemo(() => {
-    const groups = {};
-    for (const row of vendorBalances) {
-      if (!groups[row.location]) groups[row.location] = { name: row.locationLabel, rows: [] };
-      groups[row.location].rows.push(row);
-    }
-    return Object.values(groups);
-  }, [vendorBalances]);
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div className="text-lg font-semibold">Material Transactions</div>
         <button className="btn-primary" onClick={() => setOpen(true)}>
-          + Transaction
+          + Material Transaction
         </button>
       </div>
 
-      <div>
-        <div className="font-medium mb-2 text-sm text-gray-600">Vendor Material Balance</div>
-        {vendorGroups.length === 0 ? (
-          <EmptyState title="Belum ada material di vendor." />
-        ) : (
-          <div className="flex flex-col gap-3">
-            {vendorGroups.map((g) => (
-              <div key={g.name} className="card">
-                <div className="font-medium mb-2">{g.name}</div>
-                <table className="w-full text-sm">
-                  <thead className="text-left text-gray-500">
-                    <tr>
-                      <th className="py-1">Material</th>
-                      <th className="py-1 text-right">Qty</th>
-                      <th className="py-1 text-right">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {g.rows.map((r) => (
-                      <tr key={r.materialName} className="border-t border-gray-100">
-                        <td className="py-1">{r.materialName}</td>
-                        <td className="py-1 text-right">
-                          {r.qty} {r.unit}
-                        </td>
-                        <td className="py-1 text-right">{idr(r.totalValue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      <div>
-        <div className="font-medium mb-2 text-sm text-gray-600">Transaction History</div>
-        {transactions.length === 0 ? (
-          <EmptyState title="No transactions yet." />
-        ) : (
-          <div className="overflow-x-auto card p-0">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-left text-gray-500">
-                <tr>
-                  <th className="px-3 py-2">Delivery Date</th>
-                  <th className="px-3 py-2">Material</th>
-                  <th className="px-3 py-2 text-right">Qty</th>
-                  <th className="px-3 py-2">From → To</th>
-                  <th className="px-3 py-2 text-right">Material Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((t) => (
-                  <tr key={t.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2">{t.deliveryDate || t.date || "-"}</td>
-                    <td className="px-3 py-2 font-medium">{t.materialName}</td>
-                    <td className="px-3 py-2 text-right">
-                      {t.quantity} {t.unit}
-                    </td>
-                    <td className="px-3 py-2 text-gray-500">
-                      {locationLabel(t.source)} → {locationLabel(t.destination)}
-                    </td>
-                    <td className="px-3 py-2 text-right">{idr(t.materialCost ?? t.cogs)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <Modal open={open} onClose={() => setOpen(false)} title="Add Material Transaction">
+      <Modal open={open} onClose={() => setOpen(false)} title="Add Material Transaction" wide>
         <form onSubmit={submit} className="flex flex-col gap-3">
+          <div>
+            <label className="label">Jenis Transaksi</label>
+            <div className="flex gap-2">
+              {TRANSACTION_TYPES.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTransactionType(t)}
+                  className={`text-sm px-3 py-1.5 rounded-full border ${
+                    form.transactionType === t ? "bg-ink text-white border-ink" : "border-gray-200 text-gray-600"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            {form.transactionType === "Pembelian Bahan" ? (
+              <div className="text-xs text-gray-400 mt-1">
+                Dari = vendor supplier/source bahan (tidak dicatat ke Trial Balance). Ke = vendor yang menerima/menyimpan bahan.
+              </div>
+            ) : (
+              <div className="text-xs text-gray-400 mt-1">
+                Dari/Ke hanya boleh Warehouse atau Vendor dengan Vendor Type Sewing.
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Dari</label>
               <SearchableSelect
                 value={form.fromLoc}
                 onChange={(v) => setForm({ ...form, fromLoc: v })}
-                options={locationSelectOptions}
+                options={locationOptions}
                 placeholder="Pilih lokasi"
               />
             </div>
@@ -211,7 +170,7 @@ export default function MaterialTransactionsPage() {
               <SearchableSelect
                 value={form.toLoc}
                 onChange={(v) => setForm({ ...form, toLoc: v })}
-                options={locationSelectOptions}
+                options={locationOptions}
                 placeholder="Pilih lokasi"
               />
             </div>

@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
-import { listRecords, createRecord, softDeleteRecord } from "@/lib/store";
-import { resolveCogsForPlan, normalizeStatus } from "@/lib/calc";
+import { listRecords, createRecord, updateRecord, softDeleteRecord } from "@/lib/store";
+import { resolveCogsForPlan, normalizeStatus, buildFinanceMaterials, sumFinanceMaterials, computeFinanceTotals } from "@/lib/calc";
 
 // Finance auto-populates ONLY from Production Plans whose status is
 // CONFIRMED - never from Pending/On Progress/On Hold/Done/Delayed directly.
-// Once a Finance record exists for a plan it is kept as-is while the plan
-// progresses (On Progress/Done) - but it is removed the moment the plan goes
-// On Hold or is deleted entirely (REVISI 2, point 7), so Finance never shows
-// stale data for a plan that is no longer active.
+// A Finance record is removed the moment its plan goes On Hold or is deleted
+// entirely (point 7 of the earlier REVISI 2), so Finance never shows stale
+// data for a plan that is no longer active. Every surviving Finance record
+// also gets its material cost breakdown refreshed from the CURRENT COGS on
+// every sync (COGS can be repriced after Finance was first created) - only
+// dp/payments/financeProgress are left untouched, since those are user-owned.
 export async function POST(req) {
   const body = await req.json().catch(() => ({}));
   const { user } = body;
@@ -24,6 +26,7 @@ export async function POST(req) {
 
   // ---- Cascade cleanup: drop any Finance record whose plan is gone or On Hold ----
   let removed = 0;
+  const surviving = [];
   for (const f of financeRecords) {
     const planId = f.planId || f.batchId;
     const plan = planId ? planById[planId] : null;
@@ -32,12 +35,27 @@ export async function POST(req) {
     if (isOrphaned || isOnHold) {
       await softDeleteRecord("financeRecords", f.id, user || "system");
       removed++;
+    } else {
+      surviving.push(f);
     }
   }
 
-  const remainingFinance = removed > 0 ? financeRecords.filter((f) => !(!planById[f.planId || f.batchId] || normalizeStatus(planById[f.planId || f.batchId]?.status) === "On Hold")) : financeRecords;
-  const existingPlanIds = new Set(remainingFinance.map((f) => f.planId));
+  // ---- Refresh material cost breakdown on every surviving Finance record ----
+  let refreshed = 0;
+  for (const f of surviving) {
+    const plan = planById[f.planId || f.batchId];
+    const productNameNoVariant = plan.productNameNoVariant || plan.articleName;
+    const cogs = resolveCogsForPlan(plan.vendorId, productNameNoVariant, plan.plannedQty, cogsRecords);
+    if (!cogs) continue;
+    const materials = buildFinanceMaterials(cogs, plan.plannedQty);
+    const totalHargaBahanUtama = sumFinanceMaterials(materials);
+    const { financeProgress } = computeFinanceTotals({ ...f, materials, totalHargaBahanUtama });
+    await updateRecord("financeRecords", f.id, { materials, totalHargaBahanUtama, financeProgress }, user);
+    refreshed++;
+  }
 
+  // ---- Create Finance for any Confirmed plan that doesn't have one yet ----
+  const existingPlanIds = new Set(surviving.map((f) => f.planId || f.batchId));
   const confirmedPlans = plans.filter((p) => normalizeStatus(p.status) === "Confirmed");
 
   let created = 0;
@@ -47,8 +65,8 @@ export async function POST(req) {
     const cogs = resolveCogsForPlan(plan.vendorId, productNameNoVariant, plan.plannedQty, cogsRecords);
     if (!cogs) continue; // nothing to finance yet - COGS hasn't been set up for this vendor+product
 
-    const qty = Number(plan.plannedQty) || 0;
-    const cogsPerUnit = Number(cogs.totalCOGS) || 0;
+    const materials = buildFinanceMaterials(cogs, plan.plannedQty);
+    const totalHargaBahanUtama = sumFinanceMaterials(materials);
     await createRecord(
       "financeRecords",
       {
@@ -58,14 +76,14 @@ export async function POST(req) {
         articleName: plan.articleName,
         vendorId: plan.vendorId,
         vendorName: vendorNameById[plan.vendorId] || "-",
-        qty,
+        qty: Number(plan.plannedQty) || 0,
         wipDate: plan.wipDate || null,
         readyStockOpsDate: plan.readyStockOpsDate || null,
         readyStockProdDate: plan.readyStockProdDate || null,
         delayDateProd: plan.delayDate || null,
-        cogsPerUnit,
-        totalHargaBahanUtama: cogsPerUnit * qty,
-        dp: { mode: "10%", amount: 0 },
+        materials,
+        totalHargaBahanUtama,
+        dp: { mode: "10%", amount: 0, date: null, status: "Pending", proof: "" },
         payments: [],
         financeProgress: "Pending",
       },
@@ -75,5 +93,5 @@ export async function POST(req) {
   }
 
   const finalList = await listRecords("financeRecords");
-  return NextResponse.json({ data: { records: finalList, created, removed } });
+  return NextResponse.json({ data: { records: finalList, created, removed, refreshed } });
 }

@@ -111,14 +111,20 @@ export function computePlanStatus(plan) {
   return { status, isDelayed };
 }
 
-// ---------- Finance (REVISI 2: simplified single-amount model) ----------
-// Finance now tracks ONE payable amount per procurement/production plan -
-// "Total Harga Bahan Utama" = COGS per unit x Qty - with a single DP and any
-// number of Payment Term (termin) installments against it. DP_MODES/
+// ---------- Finance (REVISI 2) ----------
+// Finance itemizes EVERY material a COGS record uses (not just one lump
+// value): Material Name / Qty / Unit / COGS(per unit) / Total Payment, summed
+// into "Total Harga Bahan Utama". A single DP plus any number of Payment Term
+// (termin) installments are tracked against that total. DP_MODES/
 // PAYMENT_TERM_MODES back both dropdowns; "Manual" takes a direct nominal
-// input and "Sisanya" (Payment Term only) auto-fills the remainder.
+// input and "Sisanya" (Payment Term only) auto-fills the remainder off
+// whatever has been recorded so far (regardless of paid status). Each DP/
+// termin also carries its own Payment Date, Status (Pending/Paid) and an
+// optional Payment Proof/Reference note - only amounts actually marked Paid
+// count against "remaining".
 export const DP_MODES = ["10%", "20%", "30%", "40%", "50%", "75%", "Manual"];
 export const PAYMENT_TERM_MODES = ["10%", "20%", "30%", "40%", "50%", "75%", "Sisanya", "Manual"];
+export const PAYMENT_STATUSES = ["Pending", "Paid"];
 
 function modePercent(mode) {
   if (!mode || mode === "Manual" || mode === "Sisanya") return null;
@@ -133,33 +139,64 @@ export function computeDpAmount(dp, total) {
   return pct != null ? pct * num(total) : 0;
 }
 
-// `priorPaid` = DP + every earlier termin's amount, needed to resolve "Sisanya".
-export function computePaymentAmount(payment, total, priorPaid) {
+// `priorRecorded` = DP + every earlier termin's amount, needed to resolve
+// "Sisanya" - this uses recorded (planned) amounts, not just paid ones.
+export function computePaymentAmount(payment, total, priorRecorded) {
   if (!payment) return 0;
   if (payment.mode === "Manual") return num(payment.amount);
-  if (payment.mode === "Sisanya") return Math.max(0, num(total) - num(priorPaid));
+  if (payment.mode === "Sisanya") return Math.max(0, num(total) - num(priorRecorded));
   const pct = modePercent(payment.mode);
   return pct != null ? pct * num(total) : 0;
 }
 
+// Builds the full material line-item breakdown for a resolved COGS record x
+// qty - "Jangan hanya menampilkan satu material utama": every material the
+// COGS uses gets its own Qty/Unit/COGS(per unit)/Total Payment row. Sewing
+// cost (hargaJahit) is a service cost, not a material, so it is intentionally
+// left out of "Total Harga Bahan Utama".
+export function buildFinanceMaterials(cogs, qty) {
+  const q = num(qty);
+  return (cogs?.materials || []).map((m) => {
+    const qtyTotal = num(m.usage) * q;
+    const cogsPerUnit = num(m.pricePerUnit);
+    return {
+      materialName: m.materialName,
+      qtyTotal,
+      unit: m.unit,
+      cogsPerUnit,
+      totalPayment: qtyTotal * cogsPerUnit,
+    };
+  });
+}
+
+export function sumFinanceMaterials(materials) {
+  return (materials || []).reduce((s, m) => s + num(m.totalPayment), 0);
+}
+
 // Resolves live amounts for DP + every termin (in order), plus the totals
-// derived from them. Nothing here is persisted pre-computed - percent-based
-// amounts always recompute from the current Total Harga Bahan Utama.
+// derived from them. Percent-based amounts always recompute from the current
+// Total Harga Bahan Utama. "remaining" only drops once a DP/termin is marked
+// Paid - a Pending entry is just a plan, not money received yet.
 export function computeFinanceTotals(record) {
   const total = num(record.totalHargaBahanUtama);
-  const dpAmount = computeDpAmount(record.dp, total);
-  let priorPaid = dpAmount;
+  const dp = record.dp || { mode: "10%", amount: 0, status: "Pending" };
+  const dpAmount = computeDpAmount(dp, total);
+  let priorRecorded = dpAmount;
   const payments = (record.payments || []).map((p) => {
-    const amount = computePaymentAmount(p, total, priorPaid);
-    priorPaid += amount;
+    const amount = computePaymentAmount(p, total, priorRecorded);
+    priorRecorded += amount;
     return { ...p, amount };
   });
-  const totalPaid = dpAmount + payments.reduce((s, p) => s + num(p.amount), 0);
+  const totalRecorded = dpAmount + payments.reduce((s, p) => s + num(p.amount), 0);
+  const totalPaid =
+    (dp.status === "Paid" ? dpAmount : 0) + payments.reduce((s, p) => s + (p.status === "Paid" ? num(p.amount) : 0), 0);
   const remaining = Math.max(0, total - totalPaid);
   return {
     total,
+    dp: { ...dp, amount: dpAmount },
     dpAmount,
     payments,
+    totalRecorded,
     totalPaid,
     remaining,
     financeProgress: total > 0 && remaining <= 0 ? "Done" : "Pending",
@@ -187,7 +224,13 @@ export async function computeTrialBalance(materialNameFilter, vendorIdFilter) {
   for (const t of transactions) {
     if (materialNameFilter && t.materialName !== materialNameFilter) continue;
     const qty = num(t.quantity);
-    if (t.source && t.source !== "Supplier") {
+    // "Pembelian Bahan": the "Dari" vendor is just the supplier/source of the
+    // material, not a location that holds stock - so it is never booked to
+    // Trial Balance, only the "Ke" vendor is (REVISI 2). Legacy transactions
+    // with no transactionType, and "Perpindahan Bahan" transfers, keep
+    // booking both legs as before.
+    const skipSourceLeg = t.transactionType === "Pembelian Bahan";
+    if (t.source && t.source !== "Supplier" && !skipSourceLeg) {
       if (!vendorIdFilter || t.source === vendorIdFilter) {
         entries.push({
           materialName: t.materialName,
